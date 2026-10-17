@@ -1,0 +1,26 @@
+# Secrets — never commit these
+keys.json
+*.env
+.env*
+Secrets.xcconfig
+
+# Windows / .NET
+bin/
+obj/
+artifacts/
+build/
+.vs/
+*.user
+*.suo
+
+# Android / Gradle / IntelliJ
+.gradle/
+local.properties
+.idea/
+captures/
+*.jks
+*.keystore
+
+# OS noise
+.DS_Store
+Thumbs.db

@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/primesoul-web/bluey-windows-android/main/shared-protocol/packet.schema.json",
+  "title": "Googly Packet",
+  "description": "One newline-delimited JSON message exchanged between the host (PC) and the client (phone). Field names and semantics are frozen to match the original app (Shared/GooglyLink.swift of rbrown101010/bluey-by-riley @ 6d84d91). All fields are optional; unset fields are omitted rather than set to null, and decoders must ignore unknown fields.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "face": {
+      "$ref": "#/$defs/faceState",
+      "description": "What the phone's face should show right now. Host to phone, at least 1 Hz while connected."
+    },
+    "hello": {
+      "type": "string",
+      "description": "Sent once by each side right after the connection is ready: the sender's device name."
+    },
+    "volume": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Legacy field from the original's speech-audio era. Accepted, never emitted."
+    },
+    "command": {
+      "type": "string",
+      "description": "A request, reply, or event. Known values: hello, face (implicit via the face field), wake, sleep, awake, asleep, realtimeToken, tool, toolResult, transcribe, transcribed, notes, caption, captionDone; legacy: testVoice, playing, done, stopSpeech.",
+      "examples": [
+        "realtimeToken",
+        "tool",
+        "toolResult",
+        "transcribe",
+        "transcribed",
+        "notes",
+        "awake",
+        "asleep",
+        "caption",
+        "captionDone",
+        "wake",
+        "sleep"
+      ]
+    },
+    "audio": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "description": "Base64 audio. Today: an AAC meeting-notes chunk attached to a transcribe request. Legacy: mp3 speech for the phone to play."
+    },
+    "speech": {
+      "type": "integer",
+      "description": "Legacy field: which speech an audio packet or a playing/done event belonged to. Accepted, never emitted."
+    },
+    "callID": {
+      "type": "string",
+      "description": "Correlates a request with its reply (realtimeToken, tool/toolResult, transcribe/transcribed, notes). The requester mints a UUID; the replier echoes it verbatim."
+    },
+    "tool": {
+      "type": "string",
+      "description": "On a tool request: the tool name, e.g. look_at_screen."
+    },
+    "text": {
+      "type": "string",
+      "description": "Free text: tool arguments or tool output, a minted client secret, a caption, or JSON metadata (transcribe/notes)."
+    },
+    "image": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "description": "Base64 JPEG accompanying a toolResult (the screenshot from look_at_screen)."
+    }
+  },
+  "$defs": {
+    "faceState": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "What the phone should show: where the eyes look, the mood, and the voice level.",
+      "properties": {
+        "gazeX": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "-1 looks left, 1 looks right."
+        },
+        "gazeY": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "-1 looks up, 1 looks down."
+        },
+        "mood": {
+          "enum": [
+            "listening",
+            "resting",
+            "thinking",
+            "talking",
+            "pointing",
+            "happy",
+            "sleepy"
+          ]
+        },
+        "talk": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Voice level; drives the talking bounce."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Bluey</AssemblyName>
+    <RootNamespace>GooglyWindows</RootNamespace>
+    <Version>0.1.0</Version>
+    <Product>Bluey for Windows</Product>
+    <Description>Bluey host app for Windows — a port of bluey-by-riley (Unlicense).</Description>
+    <Copyright>Public domain (Unlicense). Original by rbrown101010.</Copyright>
+  </PropertyGroup>
+
+</Project>
