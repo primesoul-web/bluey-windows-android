@@ -19,7 +19,7 @@ The OpenAI key lives only on the PC (DPAPI-encrypted `%APPDATA%\Googly\keys.json
 
 - [x] Step 1 — full feature inventory of the original (every file, every issue/PR)
 - [x] Step 2 — repo skeleton, parity contract, wire-protocol spec, CI
-- [ ] M1 — protocol + pairing
+- [x] M1 — protocol + pairing (NDJSON codec on both platforms, mDNS advertise/browse, hello/face streams, throttling, tray skeleton, PairingView)
 - [ ] M2 — realtime voice + character
 - [ ] M3 — pointing + overlay + research card
 - [ ] M4 — computer control

@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.plugin.serialization")
 }
 
 android {
@@ -34,6 +35,14 @@ android {
     buildFeatures {
         compose = true
     }
+
+    sourceSets {
+        // The shared wire-protocol fixtures (and schema) from the repo root, so the
+        // unit tests consume exactly the same conformance files as the .NET side and CI.
+        getByName("test") {
+            resources.srcDir(rootDir.parentFile.resolve("shared-protocol"))
+        }
+    }
 }
 
 dependencies {
@@ -43,4 +52,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+
+    testImplementation("junit:junit:4.13.2")
 }

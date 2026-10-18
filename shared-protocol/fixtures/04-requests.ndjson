@@ -1,0 +1,14 @@
+{"command":"realtimeToken","callID":"9F13C2E4-7B8A-4C1D-9E5F-2A6B8C0D4E6F"}
+{"command":"realtimeToken","callID":"9F13C2E4-7B8A-4C1D-9E5F-2A6B8C0D4E6F","text":"googly-live-abc123def456"}
+{"command":"realtimeToken","callID":"9F13C2E4-7B8A-4C1D-9E5F-2A6B8C0D4E6F"}
+{"command":"tool","callID":"C2D4E6F8-A1B3-C5D7-E9F1-2A4B6C8D0E2F","tool":"look_at_screen","text":"{}"}
+{"command":"toolResult","callID":"C2D4E6F8-A1B3-C5D7-E9F1-2A4B6C8D0E2F","text":"Frontmost app: Chrome","image":"aGVsbG8="}
+{"command":"tool","callID":"11111111-2222-3333-4444-555555555555","tool":"point_at","text":"{\"target_id\":\"L3\"}"}
+{"command":"tool","callID":"22222222-3333-4444-5555-666666666666","tool":"point_at_spot","text":"{\"x\":512,\"y\":284}"}
+{"command":"toolResult","callID":"11111111-2222-3333-4444-555555555555","text":"Queued: the prompt box"}
+{"command":"transcribe","callID":"AAAAAAA1","audio":"AAAA","text":"{\"session\":\"6F1B2C4D\",\"index\":1,\"started\":3600,\"sessionStarted\":0}"}
+{"command":"transcribed","callID":"AAAAAAA1","text":"{\"segments\":[{\"speaker\":\"A\",\"start\":0,\"text\":\"Hello\"}],\"notesPath\":\"C:\\\\Users\\\\r\\\\Documents\\\\Bluey Notes\\\\2026-10-18 10.00 6F1B2C4D\"}"}
+{"command":"notes","callID":"BBBBBBB2","text":"{\"id\":\"6F1B2C4D\"}"}
+{"command":"notes","callID":"BBBBBBB2","text":"C:\\Users\\r\\Documents\\Bluey Notes\\2026-10-18 10.00 6F1B2C4D"}
+{"command":"tool","callID":"33333333-4444-5555-6666-777777777777","tool":"web_research","text":"{\"question\":\"what is this symbol?\"}"}
+{"command":"toolResult","callID":"33333333-4444-5555-6666-777777777777","text":"The full report is now in a card on the user's screen."}

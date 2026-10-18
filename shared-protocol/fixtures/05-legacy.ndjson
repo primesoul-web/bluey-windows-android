@@ -1,0 +1,10 @@
+{"volume":0.75}
+{"volume":1}
+{"volume":0}
+{"speech":3,"command":"playing"}
+{"command":"stopSpeech"}
+{"command":"testVoice"}
+{"speech":3,"command":"done"}
+{"audio":"AAAA","speech":1}
+{"volume":0,"speech":2,"command":"playing"}
+{"command":"playing"}

@@ -69,7 +69,8 @@
     "faceState": {
       "type": "object",
       "additionalProperties": true,
-      "description": "What the phone should show: where the eyes look, the mood, and the voice level.",
+      "description": "What the phone should show: where the eyes look, the mood, and the voice level. All four fields are always sent together; a face missing any of them is dropped by the original decoder.",
+      "required": ["gazeX", "gazeY", "mood", "talk"],
       "properties": {
         "gazeX": {
           "type": "number",

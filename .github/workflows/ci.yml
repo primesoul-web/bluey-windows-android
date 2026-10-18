@@ -8,6 +8,31 @@ on:
   workflow_dispatch:
 
 jobs:
+  protocol:
+    name: Protocol conformance (fixtures + .NET tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Validate fixtures against the packet schema
+        run: |
+          pip install jsonschema==4.23.0
+          python3 scripts/validate-fixtures.py
+
+      - name: .NET protocol tests (codec, throttle, framer, server)
+        run: dotnet test windows/tests/GooglyProtocol.Tests/GooglyProtocol.Tests.csproj --logger "console;verbosity=normal"
+
   windows:
     name: Windows host (EXE)
     runs-on: windows-latest
@@ -52,6 +77,10 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+
+      - name: Unit tests (codec, framer, dispatcher, socket)
+        working-directory: android
+        run: gradle :app:testDebugUnitTest --no-daemon
 
       - name: Build debug APK
         working-directory: android

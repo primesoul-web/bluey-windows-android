@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>GooglyProtocol</RootNamespace>
+    <Description>The Googly wire protocol: packets, framing, face throttle, and the phone-facing TCP server.</Description>
+    <Copyright>Public domain (Unlicense). Original by rbrown101010.</Copyright>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,5 @@
+{"hello":"Studio PC","futureField":42,"nested":{"a":[1,2,3]}}
+{"command":"wake","ttl":99,"extra":"x"}
+{"face":{"gazeX":0,"gazeY":0,"mood":"listening","talk":0,"blink":0.5,"extraDeep":{"k":"v"}}}
+{"text":"hi","unknown":null}
+{"command":"caption","text":"café 中文 <b>&</b> \"quotes\" back\\slash","when":123}

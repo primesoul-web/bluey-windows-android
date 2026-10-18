@@ -1,0 +1,7 @@
+{"command":"wake"}
+{"command":"sleep"}
+{"command":"awake"}
+{"command":"asleep"}
+{"command":"caption","text":"That's the prompt box"}
+{"command":"captionDone","text":"That's the prompt box, where you type to Claude. Cheeky little thing."}
+{"command":"caption","text":"Line one"}

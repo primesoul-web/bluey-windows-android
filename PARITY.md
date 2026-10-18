@@ -36,16 +36,16 @@ Original: [`rbrown101010/bluey-by-riley`](https://github.com/rbrown101010/bluey-
 ## M1 — Protocol + pairing
 *Ports: `Shared/GooglyLink.swift`, `Mac/PhoneServer.swift`, `iOS/MacLink.swift`, `iOS/PairingView.swift`.*
 
-- [ ] NDJSON `Packet` codec: all 10 fields, camelCase, unset fields omitted, unknown fields ignored — validated against `shared-protocol/packet.schema.json` fixtures in CI on both platforms
-- [ ] `FaceState` + the 7 moods with exact ranges
-- [ ] PC advertises `_googly._tcp` (service instance name = PC hostname); TCP listener with `TCP_NODELAY` + keepalive (2 s idle); auto-restart 2 s after failure
-- [ ] Phone browses (`NsdManager`), connects; remembers the preferred PC and auto-switches when it appears; 1.5 s retry loop
-- [ ] `hello` exchange right after the socket is ready (device names both ways); PC re-sends the current face on reconnect
-- [ ] `face` stream with the original throttle: skip if < 1 s since the last AND same mood AND |ΔgazeX|, |ΔgazeY| < 0.004 AND |Δtalk| < 0.02 — which still yields ≥ 1 packet/second so the phone knows the PC is driving
-- [ ] `callID` request/reply correlation (requester mints a UUID; replier echoes verbatim; unknown ids dropped)
-- [ ] Legacy fields/commands (`volume`, `speech`, speech-`audio`, `testVoice`, `playing`, `done`, `stopSpeech`) accepted and ignored, never emitted
-- [ ] Windows tray icon + menu skeleton: status line ("Waiting for the phone app…" / "Phone connected: <names>"), icon renders disabled with no phone, auto-sleep when the phone disconnects while awake
-- [ ] Android PairingView: sleepy breathing blob with bobbing z's, "Wake me up from your PC", spinner "Looking for your PC", "Play without the PC" escape hatch
+- [x] NDJSON `Packet` codec: all 10 fields, camelCase, unset fields omitted, unknown fields ignored — validated against `shared-protocol/packet.schema.json` fixtures in CI on both platforms
+- [x] `FaceState` + the 7 moods with exact ranges
+- [x] PC advertises `_googly._tcp` (service instance name = PC hostname); TCP listener with `TCP_NODELAY` + keepalive (2 s idle); auto-restart 2 s after failure
+- [x] Phone browses (`NsdManager`), connects; remembers the preferred PC and auto-switches when it appears; 1.5 s retry loop
+- [x] `hello` exchange right after the socket is ready (device names both ways); PC re-sends the current face on reconnect
+- [x] `face` stream with the original throttle: skip if < 1 s since the last AND same mood AND |ΔgazeX|, |ΔgazeY| < 0.004 AND |Δtalk| < 0.02 — which still yields ≥ 1 packet/second so the phone knows the PC is driving
+- [x] `callID` request/reply correlation (requester mints a UUID; replier echoes verbatim; unknown ids dropped)
+- [x] Legacy fields/commands (`volume`, `speech`, speech-`audio`, `testVoice`, `playing`, `done`, `stopSpeech`) accepted and ignored, never emitted
+- [x] Windows tray icon + menu skeleton: status line ("Waiting for the phone app…" / "Phone connected: <names>"), icon renders disabled with no phone, auto-sleep when the phone disconnects while awake
+- [x] Android PairingView: sleepy breathing blob with bobbing z's, "Wake me up from your PC", spinner "Looking for your PC", "Play without the PC" escape hatch
 
 ## M2 — Realtime voice + character
 *Ports: `iOS/LiveVoice.swift`, `iOS/FaceView.swift`, `iOS/GooglyApp.swift`, `iOS/BlueyAppView.swift`, `iOS/SessionStore.swift`, `iOS/SoundButton.swift`, session-mint half of `Mac/RealtimeHost.swift`.*

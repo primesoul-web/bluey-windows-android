@@ -1,0 +1,13 @@
+not json at all
+{"hello":123}
+{"face":{"gazeX":"left","gazeY":0,"mood":"listening","talk":0}}
+{"face":{"gazeX":0,"gazeY":0,"mood":"excited","talk":0}}
+{"face":{"gazeY":0,"mood":"listening","talk":0}}
+{"face":{"gazeX":0,"gazeY":0,"mood":"listening"}}
+{"face":{"gazeX":0,"gazeY":0}}
+{"command":42}
+{"speech":"three"}
+{"volume":"loud"}
+{"face":"sleepy"}
+[]
+"just a string"

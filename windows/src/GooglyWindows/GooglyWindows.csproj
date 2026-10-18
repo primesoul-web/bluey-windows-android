@@ -14,4 +14,12 @@
     <Copyright>Public domain (Unlicense). Original by rbrown101010.</Copyright>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\GooglyProtocol\GooglyProtocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Makaretu.Dns.Multicast" Version="0.27.0" />
+  </ItemGroup>
+
 </Project>

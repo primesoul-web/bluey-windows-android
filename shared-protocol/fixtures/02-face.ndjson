@@ -1,0 +1,8 @@
+{"face":{"gazeX":0,"gazeY":0,"mood":"listening","talk":0}}
+{"face":{"gazeX":0.42,"gazeY":-0.31,"mood":"pointing","talk":0}}
+{"face":{"gazeX":-1,"gazeY":1,"mood":"happy","talk":1}}
+{"face":{"gazeX":0.004,"gazeY":-0.004,"mood":"resting","talk":0.02}}
+{"face":{"gazeX":0.123456789,"gazeY":-0.987654321,"mood":"thinking","talk":0.5}}
+{"face":{"gazeX":0,"gazeY":0,"mood":"talking","talk":0.75}}
+{"face":{"gazeX":0.25,"gazeY":0.25,"mood":"sleepy","talk":0}}
+{"face":{"gazeX":-0.5,"gazeY":-0.125,"mood":"listening","talk":0.06}}
