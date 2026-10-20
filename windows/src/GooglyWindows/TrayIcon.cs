@@ -28,6 +28,8 @@ public sealed class TrayIcon : IDisposable
 
     public event Action? WakeToggleRequested;
     public event Action? QuitRequested;
+    public event Action? EditKeysRequested;
+    public event Action? EditPersonalityRequested;
     /// <summary>Forwards WM_HOTKEY (the argument is the hotkey id).</summary>
     public event Action<int>? HotKeyMessage;
 
@@ -141,6 +143,16 @@ public sealed class TrayIcon : IDisposable
         };
         wake.Click += (_, _) => WakeToggleRequested?.Invoke();
         menu.Items.Add(wake);
+
+        menu.Items.Add(new Separator());
+
+        var personality = new MenuItem { Header = "Personality…" };
+        personality.Click += (_, _) => EditPersonalityRequested?.Invoke();
+        menu.Items.Add(personality);
+
+        var key = new MenuItem { Header = "OpenAI Key…" };
+        key.Click += (_, _) => EditKeysRequested?.Invoke();
+        menu.Items.Add(key);
 
         menu.Items.Add(new Separator());
         var quit = new MenuItem { Header = "Quit Bluey" };

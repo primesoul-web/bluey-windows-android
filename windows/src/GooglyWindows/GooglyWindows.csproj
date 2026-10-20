@@ -16,10 +16,15 @@
 
   <ItemGroup>
     <ProjectReference Include="..\GooglyProtocol\GooglyProtocol.csproj" />
+    <ProjectReference Include="..\GooglyRealtime\GooglyRealtime.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Makaretu.Dns.Multicast" Version="0.27.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Resources\Fredoka.ttf" />
   </ItemGroup>
 
 </Project>

@@ -47,3 +47,20 @@ object BlobShape {
         radius = radius,
     )
 }
+
+/** The little blueberry crown on top of his head (SVG path from the design, 60×40 box). */
+object Crown {
+    private val points = listOf(
+        30f to 4f, 36f to 16f, 52f to 12f, 40f to 24f, 46f to 36f, 30f to 28f,
+        14f to 36f, 20f to 24f, 8f to 12f, 24f to 16f,
+    )
+
+    fun path(w: Float, h: Float): Path = Path().apply {
+        points.forEachIndexed { i, (x, y) ->
+            val px = x / 60f * w
+            val py = y / 40f * h
+            if (i == 0) moveTo(px, py) else lineTo(px, py)
+        }
+        close()
+    }
+}

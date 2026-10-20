@@ -1,16 +1,25 @@
 package dev.bluey.client
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
-import android.provider.Settings
+import android.view.HapticFeedbackConstants
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -18,40 +27,83 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import dev.bluey.client.link.FaceState
+import dev.bluey.client.link.Mood
 import dev.bluey.client.link.Packet
 import dev.bluey.client.link.PcLink
+import dev.bluey.client.realtime.ChirpPlayer
+import dev.bluey.client.realtime.LiveVoice
+import dev.bluey.client.realtime.MicStreamer
+import dev.bluey.client.realtime.OkHttpTransport
+import dev.bluey.client.session.SessionStore
+import dev.bluey.client.ui.BlueyAppView
+import dev.bluey.client.ui.FaceAnimator
+import dev.bluey.client.ui.FaceView
+import dev.bluey.client.ui.ModeIndicator
 import dev.bluey.client.ui.PairingView
-import dev.bluey.client.ui.SimpleFace
+import dev.bluey.client.ui.SoundButton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withTimeoutOrNull
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var link: PcLink
+    private lateinit var live: LiveVoice
+    private lateinit var store: SessionStore
+
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val faceState = mutableStateOf(FaceState.create())
+    private val liveState = mutableStateOf(LiveVoice.State.Asleep)
+    private var micPermissionAnswer: ((Boolean) -> Unit)? = null
+
+    private val micPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        micPermissionAnswer?.invoke(granted)
+        micPermissionAnswer = null
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         link = PcLink(this)
-        link.onFace = { face -> faceState.value = face }
-        link.onCommand = { command ->
-            // M1 stand-in for LiveVoice's state sync (M2 replaces this): the PC's
-            // wake/sleep broadcasts flip our awake flag and are acknowledged back.
-            when (command) {
-                "wake" -> {
-                    awake.value = true
-                    link.send(Packet(command = "awake"))
+        store = SessionStore(this, appScope)
+        val animator = FaceAnimator()
+
+        live = LiveVoice(
+            scope = appScope,
+            makeTransport = { OkHttpTransport() },
+            mic = MicStreamer(appScope),
+            chirps = ChirpPlayer(appScope),
+            volumePersistence = prefsVolume(),
+            requestMicPermission = { done ->
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    done(true)
+                } else {
+                    micPermissionAnswer = done
+                    micPermission.launch(Manifest.permission.RECORD_AUDIO)
                 }
-                "sleep" -> {
-                    awake.value = false
-                    link.send(Packet(command = "asleep"))
-                }
-            }
-        }
+            },
+        )
+        wireLiveVoice(animator)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -61,37 +113,125 @@ class MainActivity : ComponentActivity() {
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
         setContent {
-            BlueyRoot(link, faceState, awake)
+            BlueyRoot(link, live, store, animator, faceState, liveState)
+        }
+    }
+
+    /** Connects the live voice to the PC: keys, tools, captions and wake/sleep. */
+    private fun wireLiveVoice(animator: FaceAnimator) {
+        link.onFace = { face -> faceState.value = face }
+        link.onCommand = { command ->
+            when (command) {
+                "wake" -> live.wake()
+                "sleep" -> live.sleep()
+            }
+        }
+        animator.localTalk = { live.level }
+
+        live.requestToken = { done ->
+            link.request(Packet(command = "realtimeToken")) { reply -> done(reply?.text) }
+        }
+        live.runTool = { name, arguments, done ->
+            link.request(Packet(command = "tool", tool = name, text = arguments)) { reply ->
+                done(reply?.text ?: "The PC didn't answer.", reply?.image)
+            }
+        }
+        live.onSessionStart = {
+            store.start()
+            live.recorder.start(store.current?.id ?: "")
+        }
+        live.resumeContext = { store.recentText() }
+        live.onSessionEnd = { store.end() }
+        live.onUserTurn = { item, asked -> store.placeholder(item, asked) }
+        live.onUserWords = { item, text, asked -> store.heard(item, text, asked) }
+        live.onReply = { text -> store.reply(text) }
+        live.onReport = { text -> store.report(text) }
+        live.onCaption = { text, finished ->
+            link.send(Packet(command = if (finished) "captionDone" else "caption", text = text))
+        }
+        live.onStateChange = { state ->
+            liveState.value = state
+            when (state) {
+                LiveVoice.State.Asleep -> {
+                    animator.awake = false
+                    animator.localMood = null
+                    link.send(Packet(command = "asleep"))
+                }
+                LiveVoice.State.Waking -> {
+                    animator.awake = true
+                    animator.localMood = Mood.HAPPY
+                }
+                LiveVoice.State.Listening -> {
+                    animator.awake = true
+                    animator.localMood = null
+                    link.send(Packet(command = "awake"))
+                }
+                LiveVoice.State.Asking -> {
+                    animator.awake = true
+                    animator.localMood = Mood.LISTENING // all ears while you hold
+                    link.send(Packet(command = "awake"))
+                }
+                LiveVoice.State.Thinking -> animator.localMood = Mood.THINKING
+                LiveVoice.State.Speaking -> animator.localMood = Mood.TALKING
+            }
+        }
+    }
+
+    private fun prefsVolume(): LiveVoice.VolumePersistence {
+        val prefs = getSharedPreferences("bluey", MODE_PRIVATE)
+        return object : LiveVoice.VolumePersistence {
+            override fun get(): Double = prefs.getFloat("volume", 1f).toDouble()
+            override fun set(value: Double) {
+                prefs.edit().putFloat("volume", value.toFloat()).apply()
+            }
         }
     }
 
     override fun onStart() {
         super.onStart()
         link.start()
+        store.resyncRecent()
     }
 
     override fun onStop() {
-        super.onStop()
+        // The link stops (like the original's scenePhase handler). The session itself
+        // stays alive; Android silences background mics — a foreground mic service is
+        // planned for M6 polish (see PROGRESS.md known issues).
         link.stop()
     }
 
-    private val faceState = mutableStateOf(FaceState.create())
-    private val awake = mutableStateOf(false)
+    override fun onDestroy() {
+        if (isFinishing) live.sleep()
+        super.onDestroy()
+    }
 }
 
 @Composable
 private fun BlueyRoot(
     link: PcLink,
+    live: LiveVoice,
+    store: SessionStore,
+    animator: FaceAnimator,
     faceState: androidx.compose.runtime.State<FaceState>,
-    awake: androidx.compose.runtime.State<Boolean>,
+    liveState: androidx.compose.runtime.State<LiveVoice.State>,
 ) {
     val connected by link.connected.collectAsState()
-    val pcName by link.pcName.collectAsState()
-    val face by faceState
     val showPairing = remember { mutableStateOf(true) }
+    var showApp by remember { mutableStateOf(false) }
+    val view = LocalView.current
+
+    // One clock for the animator: face packets stamp arrivals, frames step the springs.
+    val now: () -> Double = remember {
+        val start = System.nanoTime()
+        return@remember { (System.nanoTime() - start) / 1_000_000_000.0 }
+    }
 
     LaunchedEffect(connected) {
         if (connected) showPairing.value = false
+    }
+
+    LaunchedEffect(faceState.value) {
+        animator.receive(faceState.value, now())
     }
 
     Box(
@@ -99,7 +239,53 @@ private fun BlueyRoot(
             .fillMaxSize()
             .background(Color.Black),
     ) {
-        SimpleFace(face = face, pcName = if (connected) pcName else null)
+        // His face: double tap wakes/sleeps, press-and-hold asks.
+        FaceView(
+            animator,
+            now,
+            Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = { live.toggle() }, // double tap: wake up / back to follow mode
+                    )
+                }
+                .pointerInput(live) {
+                    holdToAsk(
+                        onHold = {
+                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                            live.beginAsk()
+                        },
+                        onRelease = {
+                            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            live.endAsk()
+                        },
+                    )
+                },
+        )
+
+        ModeIndicator(liveState.value)
+
+        SoundButton(link, live)
+
+        // Bluey's app: sessions, transcripts and settings (a faint button, top-right).
+        Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 10.dp, end = 62.dp)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.06f))
+                .pointerInput(Unit) {
+                    detectTapGestures { showApp = true }
+                }
+                .padding(10.dp),
+        ) {
+            Text("▦", color = Color.White.copy(alpha = 0.35f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        }
+
+        if (showApp) {
+            BlueyAppView(store, live, link) { showApp = false }
+        }
 
         AnimatedVisibility(
             visible = showPairing.value && !connected,
@@ -107,6 +293,35 @@ private fun BlueyRoot(
             exit = fadeOut(),
         ) {
             PairingView(onPlay = { showPairing.value = false })
+        }
+    }
+}
+
+/** Press and hold the screen to ask him something; let go and he answers.
+ *  A quick tap isn't a hold: 0.3 s, exactly like the original. */
+private suspend fun PointerInputScope.holdToAsk(
+    onHold: () -> Unit,
+    onRelease: () -> Unit,
+) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val releasedEarly = withTimeoutOrNull(300) {
+            var up = false
+            while (!up) {
+                val event = awaitPointerEvent()
+                up = event.changes.none { it.id == down.id && it.pressed }
+            }
+            true
+        }
+        if (releasedEarly == null) {
+            // The finger is still down after 300 ms: this is a hold.
+            onHold()
+            var up = false
+            while (!up) {
+                val event = awaitPointerEvent()
+                up = event.changes.none { it.id == down.id && it.pressed }
+            }
+            onRelease()
         }
     }
 }

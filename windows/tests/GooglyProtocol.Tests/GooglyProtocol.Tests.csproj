@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\GooglyProtocol\GooglyProtocol.csproj" />
+    <ProjectReference Include="..\..\src\GooglyRealtime\GooglyRealtime.csproj" />
   </ItemGroup>
 
   <ItemGroup>
