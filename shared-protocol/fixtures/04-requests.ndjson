@@ -1,6 +1,7 @@
 {"command":"realtimeToken","callID":"9F13C2E4-7B8A-4C1D-9E5F-2A6B8C0D4E6F"}
 {"command":"realtimeToken","callID":"9F13C2E4-7B8A-4C1D-9E5F-2A6B8C0D4E6F","text":"googly-live-abc123def456","model":"gemini-3.8-live"}
 {"command":"realtimeToken","callID":"9F13C2E4-7B8A-4C1D-9E5F-2A6B8C0D4E6F"}
+{"command":"realtimeToken","callID":"9F13C2E4-7B8A-4C1D-9E5F-2A6B8C0D4E6F","error":"Gemini wouldn't start a voice session: 401 API key not valid."}
 {"command":"tool","callID":"C2D4E6F8-A1B3-C5D7-E9F1-2A4B6C8D0E2F","tool":"look_at_screen","text":"{}"}
 {"command":"toolResult","callID":"C2D4E6F8-A1B3-C5D7-E9F1-2A4B6C8D0E2F","text":"Frontmost app: Chrome","image":"aGVsbG8="}
 {"command":"tool","callID":"11111111-2222-3333-4444-555555555555","tool":"point_at","text":"{\"target_id\":\"L3\"}"}

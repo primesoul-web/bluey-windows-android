@@ -297,4 +297,28 @@ public class PhoneServerTests
         }
         Assert.Fail("condition never became true");
     }
+
+    [Fact]
+    public async Task Default_port_is_the_fixed_googly_port()
+    {
+        // Port addition (D12): a fixed port is what makes firewall rules, USB tethering
+        // and adb reverse possible — the original always had Bonjour resolve ephemeral ones.
+        using var harness = new ServerHarness();
+        var port = await harness.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(PhoneServer.DefaultPort, port);
+    }
+
+    [Fact]
+    public async Task A_taken_fixed_port_falls_back_to_ephemeral_and_still_serves()
+    {
+        using var first = new ServerHarness();
+        Assert.Equal(PhoneServer.DefaultPort, await first.Started.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        using var second = new ServerHarness();
+        var secondPort = await second.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.NotEqual(PhoneServer.DefaultPort, secondPort); // fell back, didn't die
+
+        using var phone = new TestPhone(secondPort);
+        Assert.Equal("Test PC", (await phone.NextAsync()).Hello);
+    }
 }

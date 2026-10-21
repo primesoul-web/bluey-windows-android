@@ -6,12 +6,17 @@ namespace GooglyProtocol;
 /// <summary>
 /// Listens for phones on the local network and streams face updates to any that connect.
 /// Port of <c>PhoneServer.swift</c> in Mac/Sources/GooglyMac — same handshake, same throttle,
-/// same 2-second listener restart. The listener binds an ephemeral port (like NWListener)
-/// and reports it through <see cref="Started"/> so the mDNS advertiser (in the app) can
-/// (re)announce it.
+/// same 2-second listener restart. The listener binds <see cref="DefaultPort"/> (a port
+/// addition: the original used NWListener's ephemeral ports, which only worked because
+/// Bonjour always resolved them; a fixed port is what makes Windows Firewall rules, USB
+/// tethering and <c>adb reverse</c> possible) and reports the port it actually got through
+/// <see cref="Started"/> so the mDNS advertiser (in the app) can (re)announce it.
 /// </summary>
 public sealed class PhoneServer : IDisposable
 {
+    /// <summary>The port phones connect on (port addition D12). If it's taken, the server
+    /// falls back to an ephemeral port and mDNS still resolves it.</summary>
+    public const int DefaultPort = 51826;
     private readonly string _hostName;
     private readonly int _requestedPort;
     private readonly Dictionary<long, Client> _clients = new();
@@ -34,7 +39,7 @@ public sealed class PhoneServer : IDisposable
 
     public int Port { get; private set; }
 
-    public PhoneServer(string? hostName = null, int port = 0)
+    public PhoneServer(string? hostName = null, int port = DefaultPort)
     {
         _hostName = string.IsNullOrWhiteSpace(hostName) ? "PC" : hostName;
         _requestedPort = port;
@@ -60,12 +65,15 @@ public sealed class PhoneServer : IDisposable
 
     private async Task RunAsync(CancellationToken ct)
     {
+        var port = _requestedPort;
+        var fellBack = false;
         while (!ct.IsCancellationRequested)
         {
             TcpListener? listener = null;
+            var retryImmediately = false;
             try
             {
-                listener = new TcpListener(IPAddress.Any, _requestedPort);
+                listener = new TcpListener(IPAddress.Any, port);
                 listener.Start();
                 Port = ((IPEndPoint)listener.Server.LocalEndPoint!).Port;
                 try { Started?.Invoke(Port); } catch { /* listeners must not break the server */ }
@@ -78,7 +86,15 @@ public sealed class PhoneServer : IDisposable
             }
             catch (Exception) when (!ct.IsCancellationRequested)
             {
-                // listener failed — try again in 2 seconds, like the original
+                // The fixed port is taken (another Bluey, or something squatting on it) —
+                // fall back to an ephemeral port once so the app still comes up over mDNS;
+                // otherwise retry the same port in 2 seconds, like the original.
+                if (port != 0 && !fellBack)
+                {
+                    fellBack = true;
+                    port = 0;
+                    retryImmediately = true;
+                }
             }
             finally
             {
@@ -86,6 +102,7 @@ public sealed class PhoneServer : IDisposable
             }
 
             if (ct.IsCancellationRequested) break;
+            if (retryImmediately) continue;
             try { await Task.Delay(2000, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
         }

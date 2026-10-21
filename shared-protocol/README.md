@@ -33,6 +33,7 @@ Every line is a `Packet`. All fields are optional; a packet usually carries just
 | `text` | string | Free text: tool arguments or output, a minted client secret, a caption, or JSON metadata |
 | `image` | base64 string | JPEG that accompanies a `toolResult` (the screenshot from `look_at_screen`) |
 | `model` | string | **Port addition** (D11, unknown to the original, ignored by older peers): on a `realtimeToken` reply, the Live model the secret was minted for (e.g. `gemini-3.8-live`) |
+| `error` | string | **Port addition** (D12, unknown to the original, ignored by older peers): why a request failed, shown to the user instead of silence — e.g. a failed `realtimeToken` reply carries the mint error text |
 
 ## FaceState
 
@@ -51,7 +52,7 @@ Every line is a `Packet`. All fields are optional; a packet usually carries just
 | `face` | PC → phone | `face` | — | Throttled (rules below); ≥ 1/s so the phone knows the PC is driving |
 | `wake` / `sleep` | PC → phone (broadcast) | — | — | Wake/sleep hotkey, menu item, or auto-sleep when the phone disconnects while awake |
 | `awake` / `asleep` | phone → PC | — | — | Session state sync |
-| `realtimeToken` | phone → PC | `callID` | same command + `callID` + `text` = minted ephemeral token (absent on failure) + `model` (port addition) | The original calls `POST /v1/realtime/client_secrets` (600 s TTL, full session config baked in) with its real OpenAI key. **The port (D11) instead calls `POST /v1beta/auth_tokens`** with its real Gemini (AI Studio) key — single-use token, 600 s new-session window, 30 min message window, whole session config locked inside `liveConnectConstraints` — and tells the phone the model in `model` |
+| `realtimeToken` | phone → PC | `callID` | same command + `callID` + `text` = minted ephemeral token (absent on failure) + `model` (port addition) + `error` (port addition, on failure: the reason) | The original calls `POST /v1/realtime/client_secrets` (600 s TTL, full session config baked in) with its real OpenAI key. **The port (D11) instead calls `POST /v1beta/auth_tokens`** with its real Gemini (AI Studio) key — single-use token, 600 s new-session window, 30 min message window, whole session config locked inside `liveConnectConstraints` — and tells the phone the model in `model`. **On failure (D12) the reason rides in `error`** so the phone can say why nothing happened |
 | `tool` | phone → PC | `callID`, `tool`, `text` = JSON arguments | `toolResult` + `callID` + `text` (+ `image`) | Tools execute strictly in arrival order |
 | `toolResult` | PC → phone | `callID`, `text`, `image`? | — | |
 | `transcribe` | phone → PC | `callID`, `audio` = AAC chunk, `text` = JSON `{session, index, started, sessionStarted}` | `transcribed` + `callID` + `text` = JSON `{segments: [{speaker, start, text}], notesPath}` | |

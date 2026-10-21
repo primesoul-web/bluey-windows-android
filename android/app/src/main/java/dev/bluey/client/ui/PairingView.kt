@@ -15,12 +15,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -33,18 +37,27 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.bluey.client.link.ManualHost
+import dev.bluey.client.link.PcLink
 import kotlinx.coroutines.android.awaitFrame
 
 /**
  * Shown until the phone finds the PC — the port of iOS/Sources/PairingView.swift:
  * a sleepy breathing blob with bobbing z's, how to wake him, a spinner while looking,
- * and the "Play without the PC" escape hatch.
+ * and the "Play without the PC" escape hatch. Port addition (D12): a typed PC
+ * address for networks where mDNS can't see the PC (USB tethering, strict Wi-Fi).
  */
 @Composable
-fun PairingView(onPlay: () -> Unit) {
+fun PairingView(link: PcLink, onPlay: () -> Unit) {
+    var address by remember { mutableStateOf("") }
+    var trying by remember { mutableStateOf<String?>(null) }
+    var invalid by remember { mutableStateOf(false) }
+
     Row(
         horizontalArrangement = Arrangement.spacedBy(56.dp),
         modifier = Modifier
@@ -107,6 +120,81 @@ fun PairingView(onPlay: () -> Unit) {
                     color = Color(0xFFF4F1FA),
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
+                    fontFamily = BlueyFonts.plexSans,
+                )
+            }
+
+            // Port addition (D12): connect by address — the way in on USB tethering,
+            // where mDNS never crosses the cable. The PC shows its address in its tray menu.
+            Spacer(Modifier.height(26.dp))
+            Text(
+                text = "Can't find it? (USB cable, strict Wi-Fi)",
+                color = Palette.inkSoft,
+                fontSize = 12.sp,
+                fontFamily = BlueyFonts.plexSans,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = address,
+                    onValueChange = {
+                        address = it
+                        invalid = false
+                    },
+                    singleLine = true,
+                    placeholder = {
+                        Text("192.168.42.196", color = Palette.inkSoft, fontSize = 13.sp)
+                    },
+                    isError = invalid,
+                    textStyle = TextStyle(fontSize = 13.sp, color = Color(0xFFF4F1FA)),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Palette.berry1,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
+                        errorBorderColor = Color(0xFFE5547A),
+                        cursorColor = Palette.berry1,
+                    ),
+                    modifier = Modifier.width(210.dp),
+                )
+                Box(
+                    modifier = Modifier
+                        .clickable {
+                            if (link.setManualHost(address)) {
+                                trying = ManualHost.parse(address.trim())?.toString()
+                                invalid = false
+                            } else {
+                                invalid = true
+                            }
+                        }
+                        .background(Palette.panel, RoundedCornerShape(14.dp))
+                        .padding(horizontal = 16.dp)
+                        .height(44.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "Connect",
+                        color = Color(0xFFF4F1FA),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = BlueyFonts.plexSans,
+                    )
+                }
+            }
+            if (invalid) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "That doesn't look like an address — try 192.168.42.196 or 192.168.42.196:51826",
+                    color = Color(0xFFE5547A),
+                    fontSize = 11.sp,
+                    fontFamily = BlueyFonts.plexSans,
+                )
+            }
+            trying?.let { addressText ->
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "Trying $addressText… (the address is in Bluey's tray menu on the PC)",
+                    color = Palette.inkSoft,
+                    fontSize = 11.sp,
                     fontFamily = BlueyFonts.plexSans,
                 )
             }

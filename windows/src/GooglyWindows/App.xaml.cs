@@ -54,16 +54,19 @@ public partial class App : Application
             _captions.PhonePosition = _settings.PhonePosition);
         _host = new RealtimeHost(_settings, _keys, _minter, _captions);
         _host.Changed += UpdateTray;
+        _host.Log += Log;
 
         _server = new PhoneServer(hostName);
         _server.Started += port => Dispatcher.BeginInvoke(() =>
         {
             try { _advertiser.Dispose(); } catch { /* not started yet */ }
             _advertiser = new MdnsAdvertiser(hostName, port);
-            Log($"advertising {GooglyService.Type} as \"{hostName}\" on port {port}");
+            Log($"advertising {GooglyService.Type} as \"{hostName}\" on port {port}" +
+                (port == PhoneServer.DefaultPort ? "" : " (fixed port was taken — fell back to an ephemeral one)"));
         });
         _server.PhonesChanged += names => Dispatcher.BeginInvoke(() =>
         {
+            Log(names.Count == 0 ? "no phones connected" : $"phones: {string.Join(", ", names)}");
             if (names.Count == 0 && _host.Awake)
             {
                 // Auto-sleep when the last phone disconnects while he's awake,
@@ -145,6 +148,32 @@ public partial class App : Application
     private void UpdateTray()
     {
         _tray.UpdatePhones(_server.PhoneNames, _host.Awake);
+        _tray.UpdateConnectionInfo(
+            _server.Port == PhoneServer.DefaultPort
+                ? $"Listening on port {PhoneServer.DefaultPort} — {LocalAddresses()}"
+                : $"Listening on port {_server.Port} (ephemeral)");
+    }
+
+    /// <summary>The PC's own LAN IPv4s, so the user can type one on a USB-cable setup.</summary>
+    private static string LocalAddresses()
+    {
+        try
+        {
+            var ips = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up &&
+                            n.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+                .SelectMany(n => n.GetIPProperties().UnicastAddresses)
+                .Select(a => a.Address)
+                .Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                .Select(a => a.ToString())
+                .Distinct()
+                .ToList();
+            return ips.Count == 0 ? "no network found" : string.Join(" · ", ips);
+        }
+        catch
+        {
+            return "no network found";
+        }
     }
 
     private void Quit()

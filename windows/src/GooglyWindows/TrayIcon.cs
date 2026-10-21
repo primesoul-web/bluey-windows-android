@@ -25,6 +25,7 @@ public sealed class TrayIcon : IDisposable
     private IReadOnlyList<string> _phones = Array.Empty<string>();
     private bool _awake;
     private bool _connectedIconState;
+    private string _connectionInfo = "";
 
     public event Action? WakeToggleRequested;
     public event Action? QuitRequested;
@@ -75,6 +76,13 @@ public sealed class TrayIcon : IDisposable
             _connectedIconState = connected;
             SwapIcon(connected);
         }
+    }
+
+    /// <summary>Port addition: the listening port and LAN IPs, shown under the status
+    /// line so a USB-cable setup can type them into the phone app.</summary>
+    public void UpdateConnectionInfo(string info)
+    {
+        _connectionInfo = info;
     }
 
     private void SwapIcon(bool connected)
@@ -134,6 +142,18 @@ public sealed class TrayIcon : IDisposable
             IsEnabled = false,
         };
         menu.Items.Add(status);
+
+        // Port addition: what to type on the phone when connecting over a USB cable
+        // (mDNS doesn't cross Android's USB-tethering interface).
+        if (_connectionInfo.Length > 0)
+        {
+            menu.Items.Add(new MenuItem
+            {
+                Header = _connectionInfo,
+                IsEnabled = false,
+                FontSize = 11,
+            });
+        }
 
         var wake = new MenuItem
         {

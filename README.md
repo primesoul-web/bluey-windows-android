@@ -15,12 +15,22 @@ This is a port of **[Bluey](https://github.com/rbrown101010/bluey-by-riley)** by
 
 The Gemini API key (from [Google AI Studio](https://aistudio.google.com/api-keys)) lives only on the PC (DPAPI-encrypted `%APPDATA%\Googly\keys.json`). The phone only ever receives single-use ten-minute ephemeral tokens with the whole session setup locked inside them — the real key never leaves the PC.
 
+## Connecting the phone (troubleshooting)
+
+The PC listens on **TCP 51826** and advertises `_googly._tcp` over mDNS. Three ways the phone gets to it, in the order the app tries:
+
+1. **Same Wi-Fi (the normal way)** — the phone discovers the PC automatically. If it doesn't appear within a few seconds, Windows Firewall is the usual suspect: allow `Bluey.exe` (or port 51826) for private networks — one `netsh advfirewall firewall add rule name="Bluey" dir=in action=allow protocol=TCP localport=51826` in an admin prompt, or the Windows Security prompt on first run.
+2. **USB cable / USB tethering** — mDNS does not cross Android's USB-tethering link, so open Bluey's tray menu on the PC, read the line `Listening on port 51826 — <IPs>`, and type that IP into **“Can't find it?”** on the phone's pairing screen (the `192.168.x.x` that isn't your Wi-Fi's). Tethering must stay on; the phone still uses its own internet for the Gemini session.
+3. **USB cable + `adb reverse tcp:51826 tcp:51826`** — the phone then finds the PC on `127.0.0.1` by itself (probed every few seconds; no typing needed).
+
+Nothing fails silently: if a session can't start, the phone says why on its own screen (no PC found, or the reason the PC's mint failed — a bad key, a blocked region, no internet), and the PC writes the details to `%APPDATA%\Googly\log.txt`.
+
 ## Status
 
 - [x] Step 1 — full feature inventory of the original (every file, every issue/PR)
 - [x] Step 2 — repo skeleton, parity contract, wire-protocol spec, CI
 - [x] M1 — protocol + pairing (NDJSON codec on both platforms, mDNS advertise/browse, hello/face streams, throttling, tray skeleton, PairingView)
-- [x] M2 — realtime voice + character (Gemini Live API: ephemeral-token minting, WSS client, hold-to-ask, chirp synthesis, FaceView, sessions)
+- [x] M2 — realtime voice + character (Gemini Live API: ephemeral-token minting, WSS client, hold-to-ask, chirp synthesis, FaceView, sessions) + connection hardening from the first hardware test (fixed port 51826, typed PC addresses for USB tethering, phone-side error surfacing)
 - [ ] M3 — pointing + overlay + research card
 - [ ] M4 — computer control
 - [ ] M5 — meeting notes

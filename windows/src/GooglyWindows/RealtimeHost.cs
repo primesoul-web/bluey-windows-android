@@ -26,6 +26,9 @@ public sealed class RealtimeHost
     /// <summary>Tools run one at a time, in the order he asked for them.</summary>
     private Task _toolChain = Task.CompletedTask;
 
+    /// <summary>Optional diagnostics sink (App wires it to %APPDATA%\Googly\log.txt).</summary>
+    public Action<string>? Log { get; set; }
+
     private DispatcherTimer? _captionClear;
     private DispatcherTimer? _readingDone;
 
@@ -119,14 +122,19 @@ public sealed class RealtimeHost
     {
         try
         {
+            Log?.Invoke($"minting live token (model {_settings.RealtimeModel}, control {_settings.ComputerControl})");
             var (token, model) = await _minter.MintAsync(
                 _keys.Get("gemini"), _settings.Personality, _settings.ComputerControl,
                 _settings.RealtimeModel).ConfigureAwait(true);
+            Log?.Invoke($"mint ok for model {model}");
             reply(new Packet { Command = "realtimeToken", CallID = packet.CallID, Text = token, Model = model });
         }
         catch (RealtimeMintException e)
         {
-            reply(new Packet { Command = "realtimeToken", CallID = packet.CallID, Text = null });
+            Log?.Invoke($"mint failed: {e.Message}");
+            // The phone shows the reason on its screen (error is a port addition);
+            // the PC keeps its own caption too.
+            reply(new Packet { Command = "realtimeToken", CallID = packet.CallID, Text = null, Error = e.Message });
             ShowCaption(e.Message, forSeconds: 6);
         }
     }

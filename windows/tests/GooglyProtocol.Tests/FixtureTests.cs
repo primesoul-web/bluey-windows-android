@@ -40,7 +40,7 @@ public class FixtureTests
     }
 
     private static readonly string[] KnownFields =
-        { "face", "hello", "volume", "command", "audio", "speech", "callID", "tool", "text", "image", "model" };
+        { "face", "hello", "volume", "command", "audio", "speech", "callID", "tool", "text", "image", "model", "error" };
 
     private static readonly string[] KnownFaceFields =
         { "gazeX", "gazeY", "mood", "talk" };
@@ -105,7 +105,7 @@ public class FixtureTests
             Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "fixtures"), "*.ndjson")
                 .Where(f => !Path.GetFileName(f).StartsWith("07-invalid"))
                 .SelectMany(File.ReadAllLines));
-        foreach (var field in new[] { "face", "hello", "volume", "command", "audio", "speech", "callID", "tool", "text", "image", "model" })
+        foreach (var field in new[] { "face", "hello", "volume", "command", "audio", "speech", "callID", "tool", "text", "image", "model", "error" })
         {
             Assert.Contains($"\"{field}\":", allText);
         }

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -59,6 +60,7 @@ import dev.bluey.client.ui.SoundButton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 
 class MainActivity : ComponentActivity() {
@@ -70,6 +72,7 @@ class MainActivity : ComponentActivity() {
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val faceState = mutableStateOf(FaceState.create())
     private val liveState = mutableStateOf(LiveVoice.State.Asleep)
+    private val sessionError = mutableStateOf<String?>(null)
     private var micPermissionAnswer: ((Boolean) -> Unit)? = null
 
     private val micPermission = registerForActivityResult(
@@ -113,7 +116,7 @@ class MainActivity : ComponentActivity() {
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
         setContent {
-            BlueyRoot(link, live, store, animator, faceState, liveState)
+            BlueyRoot(link, live, store, animator, faceState, liveState, sessionError)
         }
     }
 
@@ -129,8 +132,17 @@ class MainActivity : ComponentActivity() {
         animator.localTalk = { live.level }
 
         live.requestToken = { done ->
-            link.request(Packet(command = "realtimeToken")) { reply ->
-                done(reply?.text, reply?.model)
+            if (!link.connected.value) {
+                done(null, null, LiveVoice.NO_PC)
+            } else {
+                link.request(Packet(command = "realtimeToken")) { reply ->
+                    when {
+                        reply?.text != null -> done(reply.text, reply.model, null)
+                        reply?.error != null -> done(null, null, reply.error)
+                        link.connected.value -> done(null, null, null) // mint failed without a reason
+                        else -> done(null, null, LiveVoice.NO_PC)      // the PC went away mid-request
+                    }
+                }
             }
         }
         live.runTool = { name, arguments, done ->
@@ -151,6 +163,7 @@ class MainActivity : ComponentActivity() {
         live.onCaption = { text, finished ->
             link.send(Packet(command = if (finished) "captionDone" else "caption", text = text))
         }
+        live.onSessionError = { message -> sessionError.value = message }
         live.onStateChange = { state ->
             liveState.value = state
             when (state) {
@@ -216,8 +229,10 @@ private fun BlueyRoot(
     animator: FaceAnimator,
     faceState: androidx.compose.runtime.State<FaceState>,
     liveState: androidx.compose.runtime.State<LiveVoice.State>,
+    sessionError: androidx.compose.runtime.MutableState<String?>,
 ) {
     val connected by link.connected.collectAsState()
+    val target by link.target.collectAsState()
     val showPairing = remember { mutableStateOf(true) }
     var showApp by remember { mutableStateOf(false) }
     val view = LocalView.current
@@ -234,6 +249,14 @@ private fun BlueyRoot(
 
     LaunchedEffect(faceState.value) {
         animator.receive(faceState.value, now())
+    }
+
+    // A session problem is never silent: show it for six seconds, then tidy away.
+    LaunchedEffect(sessionError.value) {
+        if (sessionError.value != null) {
+            delay(6000)
+            sessionError.value = null
+        }
     }
 
     Box(
@@ -270,6 +293,37 @@ private fun BlueyRoot(
 
         SoundButton(link, live)
 
+        // Port addition: while the PC link is down, a tiny honest note — without it a
+        // dropped link looks exactly like him ignoring you.
+        if (!connected) {
+            Text(
+                text = target?.let { "PC: trying $it…" } ?: "PC: not connected — looking…",
+                color = Color.White.copy(alpha = 0.35f),
+                fontSize = 11.sp,
+                fontFamily = dev.bluey.client.ui.BlueyFonts.plexMono,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 20.dp, bottom = 18.dp),
+            )
+        }
+
+        // A session error (no PC, bad key, lost session) — bottom-center, above his face.
+        sessionError.value?.let { message ->
+            Text(
+                text = message,
+                color = Color(0xFFF4F1FA),
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+                fontFamily = dev.bluey.client.ui.BlueyFonts.plexSans,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 28.dp, vertical = 30.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.White.copy(alpha = 0.08f))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            )
+        }
+
         // Bluey's app: sessions, transcripts and settings (a faint button, top-right).
         Box(
             Modifier
@@ -294,7 +348,7 @@ private fun BlueyRoot(
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
-            PairingView(onPlay = { showPairing.value = false })
+            PairingView(link, onPlay = { showPairing.value = false })
         }
     }
 }

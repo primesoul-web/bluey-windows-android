@@ -123,6 +123,12 @@ public sealed class Packet
     /// Unknown to the original app and safely ignored by older peers (wire rule 5).</summary>
     [JsonPropertyName("model")]
     public string? Model { get; init; }
+
+    /// <summary>Port addition: why a request failed, shown to the user instead of silence
+    /// (e.g. a realtimeToken reply with no token carries the mint error here). Unknown to
+    /// the original app and safely ignored by older peers (wire rule 5).</summary>
+    [JsonPropertyName("error")]
+    public string? Error { get; init; }
 }
 
 /// <summary>

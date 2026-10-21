@@ -104,6 +104,25 @@ public class PacketCodecTests
     }
 
     [Fact]
+    public void Error_carries_the_reason_on_a_failed_realtimeToken_reply()
+    {
+        // Port addition (wire rule 5): why a mint failed, shown instead of silence.
+        var packet = PacketCodec.TryDecode(
+            "{\"command\":\"realtimeToken\",\"callID\":\"U3\",\"error\":\"Gemini wouldn't start a voice session: 401 API key not valid.\"}");
+        Assert.NotNull(packet);
+        Assert.Equal("Gemini wouldn't start a voice session: 401 API key not valid.", packet!.Error);
+        JsonSemantics.AssertEqual(
+            "{\"command\":\"realtimeToken\",\"callID\":\"U3\",\"error\":\"Gemini wouldn't start a voice session: 401 API key not valid.\"}",
+            EncodeText(packet));
+
+        // Absent on successful replies — simply unset.
+        var ok = PacketCodec.TryDecode("{\"command\":\"realtimeToken\",\"callID\":\"U4\",\"text\":\"auth_tokens/xyz\"}");
+        Assert.NotNull(ok);
+        Assert.Null(ok!.Error);
+        Assert.DoesNotContain("error", EncodeText(ok));
+    }
+
+    [Fact]
     public void Unknown_fields_are_ignored()
     {
         var packet = PacketCodec.TryDecode("{\"hello\":\"PC\",\"futureField\":42,\"nested\":{\"a\":[1,2,3]}}");

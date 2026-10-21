@@ -92,6 +92,24 @@ class PacketCodecTest {
     }
 
     @Test
+    fun `error carries the reason on a failed realtimeToken reply`() {
+        // Port addition (wire rule 5): why a mint failed, shown instead of silence.
+        val packet = PacketCodec.tryDecode(
+            """{"command":"realtimeToken","callID":"U3","error":"Gemini wouldn't start a voice session: 401 API key not valid."}""",
+        )
+        assertEquals("Gemini wouldn't start a voice session: 401 API key not valid.", packet?.error)
+        assertEquals(
+            """{"command":"realtimeToken","callID":"U3","error":"Gemini wouldn't start a voice session: 401 API key not valid."}""",
+            encodeText(packet!!),
+        )
+
+        // Absent on successful replies — simply unset.
+        val ok = PacketCodec.tryDecode("""{"command":"realtimeToken","callID":"U4","text":"auth_tokens/xyz"}""")
+        assertNull(ok?.error)
+        assertTrue(!encodeText(ok!!).contains("error"))
+    }
+
+    @Test
     fun `unknown fields are ignored`() {
         val packet = PacketCodec.tryDecode("""{"hello":"PC","futureField":42,"nested":{"a":[1,2,3]}}""")
         assertEquals("PC", packet?.hello)

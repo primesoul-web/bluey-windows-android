@@ -44,8 +44,9 @@ class LiveVoice(
         private set
 
     /** Asks the PC for a short-lived token, and the model it was minted for.
-     * Calls back with a null token on failure. */
-    var requestToken: ((callback: (token: String?, model: String?) -> Unit) -> Unit)? = null
+     * Calls back with a null token on failure; `error` carries the user-facing reason
+     * ([NO_PC] when the PC couldn't be reached, the PC's mint message otherwise). */
+    var requestToken: ((callback: (token: String?, model: String?, error: String?) -> Unit) -> Unit)? = null
 
     /** Runs a tool on the PC: (name, JSON arguments) → (output text, optional JPEG base64). */
     var runTool: ((name: String, arguments: String, done: (output: String, image: String?) -> Unit) -> Unit)? = null
@@ -53,6 +54,11 @@ class LiveVoice(
     /** What he's saying, as it streams in. `done` is true when the reply finished. */
     var onCaption: ((text: String, done: Boolean) -> Unit)? = null
     var onStateChange: ((State) -> Unit)? = null
+
+    /** A session couldn't start or was lost — the reason, shown on the phone itself
+     * (port addition: the original had no phone-side error surface, so failures on
+     * mDNS-blind networks looked like silence). */
+    var onSessionError: ((message: String) -> Unit)? = null
 
     /** For the saved transcript: a session started or ended, something you said, his replies. */
     var onSessionStart: (() -> Unit)? = null
@@ -91,6 +97,11 @@ class LiveVoice(
     /** The locked session is live: nothing but the setup goes on the wire before this. */
     private var sessionReady = false
     private val pendingSends = mutableListOf<String>()
+
+    /** Connects/mints that failed in a row without a setupComplete between them.
+     * Three in a row means something's properly wrong — tell the user instead of
+     * silently looping forever (port addition; the original retried endlessly). */
+    private var consecutiveFailures = 0
 
     /** Turns that were questions (said while holding, or asked when you let go). The Live
      * API has no item ids, so turns are numbered here and sealed at each exchange's end. */
@@ -135,11 +146,14 @@ class LiveVoice(
                 setState(State.Asleep)
                 return@requestMicPermission
             }
-            request { token, model ->
+            request { token, model, error ->
                 if (state != State.Waking) return@request
                 if (token == null) {
                     wantAwake = false
                     setState(State.Asleep)
+                    val message = sessionErrorMessage(error)
+                    onCaption?.invoke(message, true)
+                    onSessionError?.invoke(message)
                 } else {
                     connect(token, model)
                 }
@@ -243,6 +257,7 @@ class LiveVoice(
      * behavior — first connections start the mic and chirp, reconnects replay context. */
     private fun onSessionReady() {
         sessionReady = true
+        consecutiveFailures = 0
         flushPending()
         if (reconnecting) {
             // Same session, new connection: the mic and recording never stopped. Remind him what was said.
@@ -272,13 +287,15 @@ class LiveVoice(
         if (!wantAwake) return
         val request = requestToken ?: return
         reconnecting = true
-        request { token, model ->
+        request { token, model, _ ->
             scope.launch {
                 if (!wantAwake || transport != null) return@launch
                 if (token != null) {
                     connect(token, model)
                 } else {
-                    // The PC may be briefly away; keep trying (the recording continues meanwhile).
+                    // The PC may be briefly away; keep trying, exactly like the original
+                    // (the recording continues meanwhile). A dead WSS — not a dead PC —
+                    // is what onTransportClosed caps.
                     val backoff = (2_000L + attempt * 3_000L).coerceAtMost(30_000L)
                     delay(backoff)
                     if (wantAwake) reconnect(attempt + 1)
@@ -292,7 +309,33 @@ class LiveVoice(
         sessionReady = false
         responseActive = false
         toolsRunning = 0
-        if (wantAwake) reconnect() else sleep()
+        if (!wantAwake) {
+            sleep()
+            return
+        }
+        // Three connections in a row that never reached setupComplete means something
+        // is properly wrong (no internet, blocked region, dead token) — say so and
+        // stop, instead of minting and failing silently forever (port addition).
+        if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            giveUp("I can't get into the Gemini session — check the phone's internet" +
+                " (and the API key on the PC), then hold the screen to try again.")
+            return
+        }
+        reconnect()
+    }
+
+    /** Stops trying and says why — the anti-silence guarantee for a dead session. */
+    private fun giveUp(message: String) {
+        onCaption?.invoke(message, true)
+        onSessionError?.invoke(message)
+        sleep()
+    }
+
+    /** The user-facing text for a token that never came. */
+    private fun sessionErrorMessage(error: String?): String = when (error) {
+        NO_PC -> "I can't find your PC. Check Bluey is running on the computer and both are on the same Wi-Fi — or type the PC's address on the pairing screen (a USB cable works too)."
+        null -> "The Gemini session couldn't start — try again in a moment."
+        else -> error
     }
 
     private fun send(json: String) {
@@ -440,6 +483,14 @@ class LiveVoice(
 
     private fun stopAudio() {
         mic.stop()
+    }
+
+    companion object {
+        /** Sentinel error for "the PC link wasn't there at all". */
+        const val NO_PC = "no-pc"
+
+        /** Failed connects/mints in a row before giving up and saying so. */
+        const val MAX_CONSECUTIVE_FAILURES = 3
     }
 
     private fun chirp(syllables: Int) {

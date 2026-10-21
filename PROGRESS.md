@@ -53,6 +53,7 @@ Android client**. Repo: `primesoul-web/bluey-windows-android` (public, Unlicense
 | CI | Windows EXE publish + Android APK build (+ protocol job) | ✅ done (`6672c3a`) |
 | M1 | Protocol + pairing (codec, mDNS, tray skeleton, PairingView, 96 tests) | ✅ done (`ad108a9`, CI green) |
 | M2 | Realtime voice + character (mint, WSS, hold-to-ask, chirp, FaceView, sessions) | ✅ done (`eebac91` → retargeted to Gemini Live in `cbbd489`, CI green — 93 Windows + 87 Android tests, EXE + APK artifacts) |
+| M2-hardening | First hardware test round: fixed port 51826, typed PC address (USB tethering), adb-reverse probe, phone-side error surfacing, 3-strikes transport cap | ✅ done (2026-10-21, after the user's first real test — 96 Windows + 97 Android tests) |
 | M3 | Pointing + overlay + research cards | ⬜ next |
 | M4 | Computer control (click/type/scroll/drag/open, SendInput) | ⬜ |
 | M5 | Meeting notes (AAC chunks, diarized transcription, `Documents\Bluey Notes\`) | ⬜ |
@@ -77,6 +78,16 @@ The protocol shapes below are taken verbatim from Google's docs (ai.google.dev,
 2026-10-21); these semantics could not be exercised without a key and should be
 watched on first real use:
 
+**Update — first hardware round (2026-10-21):** the user's AI Studio key was tested
+from the build sandbox: a garbage key returns 401, the user's key returned
+“User location is not supported” — meaning **the key itself passes authentication**
+(the sandbox's egress region is blocked, the user's isn't). The mint endpoint, body
+shape, WSS endpoint and `gemini-3.8-live` model were re-verified against
+ai.google.dev/gemini-api/docs/live-api/ephemeral-tokens the same day. The user's
+reported “no answer, no mic” turned out to be the **phone↔PC link** (USB tethering
+breaks mDNS discovery) plus fully silent failure paths — both fixed in the M2
+hardening commit (D12). Items below are still worth watching on the next live test.
+
 1. **Minting** — `POST /v1beta/auth_tokens` with `liveConnectConstraints.config`
    carrying `systemInstruction`/`tools`/`realtimeInputConfig`/transcriptions/
    compression. If the endpoint rejects any locked field (400), trim it from
@@ -98,6 +109,37 @@ watched on first real use:
 6. **Session resets** — the Live API resets connections every few minutes (`goAway`);
    the reconnect path (new token + context replay) covers it — verify on a long
    session.
+
+## First hardware test round — what happened (2026-10-21)
+
+The user ran the real app on real hardware: entered their AI Studio key on the PC,
+held the phone screen, granted mic permission — but no answer and no mic indicator.
+Diagnosis from the code (all confirmed by reading, fixed in the D12 commit):
+
+1. **USB tethering kills mDNS discovery** — Android's NsdManager never browses across
+   the tether interface, so the phone never found the PC; `PcLink.request` then
+   returned null instantly and `LiveVoice.wake()` went back to sleep **silently**.
+2. **Mic only starts on `setupComplete`** — so no green mic light, exactly as reported.
+3. **No error was visible anywhere**: the phone had no error surface, and the PC's
+   mint-failure caption never fired because the request never reached the PC.
+
+Fixes (all tested; see PARITY.md D12): fixed port **51826** + ephemeral fallback,
+ typed PC address on the pairing screen, ~7.5 s loopback probe for
+ `adb reverse tcp:51826 tcp:51826`, new `error` wire field on failed mint replies,
+ phone-side `onSessionError` surface (“I can't find your PC…”, the PC's mint reason
+ verbatim, 3-strikes transport give-up), “PC: not connected” status on the face
+ screen, tray “Listening on port 51826 — IPs” line, mint/phone logging to
+ `%APPDATA%\Googly\log.txt`.
+
+**Next live test checklist for the user** (in order):
+1. PC: start Bluey, add the key, open the tray menu → note the `Listening on port … — IPs` line.
+2. Try Wi-Fi first (both on the same network); if the phone doesn't connect in ~10 s,
+   allow Bluey through Windows Firewall (see README “Connecting the phone”).
+3. USB tethering: keep it on, type the PC's tether IP (from the tray line, not the
+   Wi-Fi one) into the pairing screen's address box.
+4. Hold the screen ≥ 0.3 s and talk; the phone should chirp on wake (mic on, green
+   light), and replies appear as the PC caption bubble + phone transcript.
+5. If anything fails, the phone now says why; `%APPDATA%\Googly\log.txt` has the PC side.
 
 ## M2 detailed checklist (working copy — PARITY.md is the contract)
 

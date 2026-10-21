@@ -132,6 +132,7 @@ class LiveVoiceTest {
     private fun TestScope.build(
         token: String? = "auth_tokens/minted",
         model: String? = "gemini-3.8-live",
+        error: String? = null,
         context: String? = null,
         toolRunner: ((String, String, (String, String?) -> Unit) -> Unit)? = null,
     ): LiveVoice {
@@ -142,7 +143,7 @@ class LiveVoiceTest {
             mic = mic,
             chirps = chirp,
         ).apply {
-            requestToken = { done -> done(token, model) }
+            requestToken = { done -> done(token, model, error) }
             resumeContext = { context }
             runTool = toolRunner
         }
@@ -181,7 +182,7 @@ class LiveVoiceTest {
             chirps = chirp,
             requestMicPermission = { done -> done(false) },
         ).apply {
-            requestToken = { done -> done("token", null) }
+            requestToken = { done -> done("token", null, null) }
             onCaption = { text, done -> caption = text to done }
         }
 
@@ -194,11 +195,73 @@ class LiveVoiceTest {
     }
 
     @Test
-    fun `a missing token goes back to sleep`() = runTest {
+    fun `a missing token goes back to sleep without a session`() = runTest {
         val live = build(token = null)
         live.wake()
         assertEquals(LiveVoice.State.Asleep, live.state)
         assertFalse(transport.open)
+    }
+
+    @Test
+    fun `a missing token with no PC says so on the phone`() = runTest {
+        var sessionError: String? = null
+        var caption: Pair<String, Boolean>? = null
+        val live = build(token = null, error = LiveVoice.NO_PC)
+        live.onSessionError = { sessionError = it }
+        live.onCaption = { text, done -> caption = text to done }
+
+        live.wake()
+
+        // Never silent: the phone itself explains what's wrong.
+        assertTrue(sessionError!!.contains("can't find your PC"))
+        assertEquals(sessionError, caption?.first)
+        assertEquals(true, caption?.second)
+        assertEquals(LiveVoice.State.Asleep, live.state)
+    }
+
+    @Test
+    fun `a mint failure forwards the PC's reason to the phone`() = runTest {
+        var sessionError: String? = null
+        val reason = "Gemini wouldn't start a voice session: 401 API key not valid."
+        val live = build(token = null, error = reason)
+        live.onSessionError = { sessionError = it }
+
+        live.wake()
+
+        assertEquals(reason, sessionError)
+        assertEquals(LiveVoice.State.Asleep, live.state)
+    }
+
+    @Test
+    fun `three connections in a row that never complete give up with a message`() = runTest {
+        var sessionError: String? = null
+        val live = build()
+        live.onSessionError = { sessionError = it }
+        live.wake()
+        transport.ready()
+
+        // Three drops without a setupComplete between them — a genuinely dead path.
+        transport.drop(); pump()
+        transport.drop(); pump()
+        transport.drop(); pump()
+
+        assertTrue(sessionError!!.contains("can't get into the Gemini session"))
+        assertEquals(LiveVoice.State.Asleep, live.state)
+        assertEquals(1, mic.stopped) // everything torn down, ready to try again
+    }
+
+    @Test
+    fun `a dropped connection that recovers resets the failure count`() = runTest {
+        val live = build()
+        live.wake()
+        transport.ready()
+
+        transport.drop(); pump() // failure 1
+        transport.ready()        // back in — the count resets
+        transport.drop(); pump() // failure 1 again, not 2
+        transport.ready()
+
+        assertEquals(LiveVoice.State.Listening, live.state) // still going, no give-up
     }
 
     @Test
@@ -231,7 +294,7 @@ class LiveVoiceTest {
 
     @Test
     fun `released before the token arrives asks as soon as the session is ready`() = runTest {
-        var handBack: ((String?, String?) -> Unit)? = null
+        var handBack: ((String?, String?, String?) -> Unit)? = null
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         val live = LiveVoice(
             scope = scope,
@@ -245,7 +308,7 @@ class LiveVoiceTest {
         live.beginAsk() // wakes; still Waking while the token is pending
         assertEquals(LiveVoice.State.Waking, live.state)
         live.endAsk() // let go early: askWhenReady
-        handBack?.invoke("auth_tokens/slowly-minted", "gemini-3.8-live")
+        handBack?.invoke("auth_tokens/slowly-minted", "gemini-3.8-live", null)
         transport.ready()
         assertEquals(LiveVoice.State.Thinking, live.state)
         assertTrue(transport.sentText("activityEnd").isNotEmpty())
@@ -440,7 +503,7 @@ class LiveVoiceTest {
         val live = LiveVoice(scope = scope, makeTransport = { transport }, mic = mic, chirps = chirp).apply {
             requestToken = { done ->
                 mints++
-                done(token, null)
+                done(token, null, null)
             }
         }
         live.wake()
