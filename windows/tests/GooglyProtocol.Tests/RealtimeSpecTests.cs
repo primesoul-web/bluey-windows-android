@@ -205,7 +205,13 @@ public class RealtimeSpecTests
             "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained",
             RealtimeSpec.ConstrainedEndpoint);
         Assert.StartsWith("wss://generativelanguage.googleapis.com/", RealtimeSpec.ConstrainedEndpointAlternate);
-        Assert.EndsWith("/constrained", RealtimeSpec.ConstrainedEndpointAlternate);
+        // Probe-verified 2026-10-22: the v1alpha service name is the real alternate
+        // route (token auth accepted); the docs' /constrained suffix 404s on upgrade
+        // and the plain endpoint rejects minted tokens (close 1008).
+        Assert.Equal(
+            "wss://generativelanguage.googleapis.com/ws/" +
+            "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+            RealtimeSpec.ConstrainedEndpointAlternate);
         Assert.NotEqual(RealtimeSpec.ConstrainedEndpoint, RealtimeSpec.ConstrainedEndpointAlternate);
     }
 

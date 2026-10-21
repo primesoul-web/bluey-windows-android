@@ -254,3 +254,43 @@ what we want). Inside the setup, `responseModalities` and `speechConfig` nest un
 flat; the phone side (Constrained endpoint, access_token, manual activity,
 16 kHz audio, output-transcription bubbles) was already correct and is untouched.
 99 Windows + 100 Android tests green.
+
+## M2.8 — the self-test tells the truth (2026-10-22)
+
+The 0.3.0 diagnostic build's own bug hid the session-leg answer. Its
+`ReceiveMessageAsync` checked `EndOfMessage` before `MessageType`, so the server's
+close frame (always `EndOfMessage=true`, zero bytes) came back as an EMPTY message
+marked "received" and `JsonNode.Parse("")` threw `JsonReaderException: The input
+does not contain any JSON tokens` — the exact line in the user's log. The server's
+real close reason (code + description) was discarded. v0.3.1 checks Close first and
+reports it, maps the known reasons to advice (region block, token rejection,
+unregistered callers), and survives binary / empty / non-JSON frames with a note
+instead of a crash.
+
+One tray click now maps the whole session leg, stopping at the first leg that
+works — each with its own fresh single-use token: A realtimeInput text turn (what
+0.3.0 sent), B clientContent text turn (his say-hi envelope), C an audio turn (his
+exact hold-to-ask flow; a synthesized 16 kHz PCM16 tone stands in for the mic),
+D the alternate endpoint.
+
+Live probes with the user's working key (2026-10-22, scripts/e2e-probe/ws_frame_probe.py):
+
+- Mint confirmed end-to-end: flat `AuthToken` shape, 300–800 ms — matches the
+  user's PC (their log: mint OK in 1076 ms, key stored 39 chars).
+- This sandbox's egress region is blocked on the WS leg: close 1007 "User location
+  is not supported for the API use" before setupComplete — so the user's post-turn
+  close can't be reproduced here. Their PC is NOT region-blocked (it reached
+  setupComplete); the 0.3.1 self-test will name their actual close reason.
+- Route map: primary v1beta `BidiGenerateContentConstrained` valid; **v1alpha
+  spelling also valid** (same token auth) → new `ConstrainedEndpointAlternate`;
+  the docs' `/constrained` suffix 404s on upgrade (dead); the plain
+  `BidiGenerateContent` rejects minted tokens (close 1008 "unregistered callers"
+  — it wants an API key, so it is not a token fallback).
+- `realtimeInput.text` IS documented (live-guide), as is `clientContent`; the
+  phone's envelopes are all docs-correct → **the APK is unchanged**.
+
+Toolchain note: `toolchains/` was wiped again; .NET 10 SDK now lives at
+`~/.dotnet/dotnet` (installed 2026-10-22, version 10.0.402).
+
+Deliverable: `download/Bluey-windows-0.3.1.zip` (+ WHATS-NEW.txt inside).
+102 Windows tests green. Not pushed — no token this session; commit is local.

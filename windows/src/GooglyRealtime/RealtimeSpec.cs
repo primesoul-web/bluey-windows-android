@@ -24,12 +24,16 @@ public static class RealtimeSpec
         "wss://generativelanguage.googleapis.com/ws/" +
         "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained";
 
-    /// <summary>The docs' alternate spelling of the constrained endpoint (path form with
-    /// a /constrained suffix) — the self-test falls back to it so a wrong URL can be
-    /// told apart from other session-leg failures in one round trip.</summary>
+    /// <summary>The alternate spelling of the constrained endpoint (v1alpha service
+    /// name) — the self-test falls back to it so a wrong/retired primary route can be
+    /// told apart from other session-leg failures in one round trip. Probe-verified
+    /// 2026-10-22: the v1alpha route exists and accepts minted tokens exactly like the
+    /// primary (same location-check close from a blocked region); the docs'
+    /// /constrained-suffix spelling 404s on upgrade, and the plain non-constrained
+    /// endpoint rejects minted tokens with close 1008 "unregistered callers".</summary>
     public const string ConstrainedEndpointAlternate =
-        "wss://generativelanguage.googleapis.com/" +
-        "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent/constrained";
+        "wss://generativelanguage.googleapis.com/ws/" +
+        "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
 
     /// <summary>The TTS voice he "speaks" with. His replies reach the user as text bubbles
     /// (via output transcription — native-audio models can't answer text-only), so this
