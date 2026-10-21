@@ -212,19 +212,19 @@ public static class RealtimeSpec
     // MARK: Session
 
     /// <summary>
-    /// The session config locked into the minted token — the Gemini Live API equivalent
-    /// of <c>RealtimeHost.session</c>. The shape is the SDK's LiveConnectConfig as the
-    /// <c>auth_tokens</c> endpoint expects it inside <c>liveConnectConstraints.config</c>.
-    /// He never talks out loud: the model answers in audio (native-audio models can't do
-    /// text-only), the phone reads the output transcription and shows it as his speech
-    /// bubble. Manual activity detection means the server never answers on its own —
-    /// only when the phone signals the end of a held question — mirroring the original's
+    /// The <c>BidiGenerateContentSetup</c> locked into the minted token — the Gemini
+    /// Live API equivalent of <c>RealtimeHost.session</c>. He never talks out loud: the
+    /// model answers in audio (native-audio models can't do text-only), the phone reads
+    /// the output transcription and shows it as his speech bubble. Manual activity
+    /// detection means the server never answers on its own — only when the phone signals
+    /// the end of a held question — mirroring the original's
     /// <c>server_vad create_response:false</c>. Input and output transcriptions feed the
     /// saved session transcript, and sliding-window compression keeps all-day sessions
     /// inside the context window.
     /// </summary>
-    public static JsonObject LiveConfig(string? savedPersonality, bool computerControl) => new()
+    public static JsonObject Setup(string? savedPersonality, bool computerControl, string? model) => new()
     {
+        ["model"] = "models/" + ModelName(model),
         ["systemInstruction"] = new JsonObject
         {
             ["parts"] = new JsonArray(new JsonObject
@@ -236,12 +236,17 @@ public static class RealtimeSpec
         {
             ["functionDeclarations"] = Tools(computerControl),
         }),
-        ["responseModalities"] = new JsonArray("AUDIO"),
-        ["speechConfig"] = new JsonObject
+        // Modalities and voice are generationConfig fields on the wire (probe-verified:
+        // the SDK's LiveConnectConfig flattens them, but the raw setup nests them here).
+        ["generationConfig"] = new JsonObject
         {
-            ["voiceConfig"] = new JsonObject
+            ["responseModalities"] = new JsonArray("AUDIO"),
+            ["speechConfig"] = new JsonObject
             {
-                ["prebuiltVoiceConfig"] = new JsonObject { ["voiceName"] = Voice },
+                ["voiceConfig"] = new JsonObject
+                {
+                    ["prebuiltVoiceConfig"] = new JsonObject { ["voiceName"] = Voice },
+                },
             },
         },
         ["realtimeInputConfig"] = new JsonObject
@@ -257,10 +262,15 @@ public static class RealtimeSpec
     };
 
     /// <summary>
-    /// The body for POST /v1beta/auth_tokens: a single-use ephemeral token that can
-    /// start sessions for ten minutes (the original's 600 s secret TTL) and carries
-    /// messages for thirty (the documented default), with the whole session config
-    /// locked inside so the phone only ever holds the token.
+    /// The body for POST /v1beta/auth_tokens: a flat <c>AuthToken</c> resource. The
+    /// whole session config rides in <c>bidiGenerateContentSetup</c> — the deployed
+    /// REST shape, probe-verified 2026-10-21: the docs' curl examples wrap it in
+    /// <c>liveConnectConstraints</c>, a field the live endpoint rejects with
+    /// "Unknown name 'liveConnectConstraints' at 'auth_token'". <c>uses</c> is a union
+    /// sibling of <c>bidiGenerateContentSetup</c>, so it can't be sent alongside it;
+    /// unset means the default, 1 — exactly the single-use token we want. Ten minutes
+    /// to start a session (the original's 600 s secret TTL), thirty for messages (the
+    /// documented default).
     /// </summary>
     public static JsonObject MintRequestBody(
         string? savedPersonality, bool computerControl, string? model, DateTime utcNow)
@@ -268,14 +278,9 @@ public static class RealtimeSpec
         var modelName = ModelName(model);
         return new JsonObject
         {
-            ["uses"] = 1,
             ["expireTime"] = Timestamp(utcNow.AddMinutes(30)),
             ["newSessionExpireTime"] = Timestamp(utcNow.AddSeconds(600)),
-            ["liveConnectConstraints"] = new JsonObject
-            {
-                ["model"] = "models/" + modelName,
-                ["config"] = LiveConfig(savedPersonality, computerControl),
-            },
+            ["bidiGenerateContentSetup"] = Setup(savedPersonality, computerControl, modelName)
         };
     }
 

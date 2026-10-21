@@ -43,8 +43,13 @@ public class MinterTests
         Assert.Equal(RealtimeMinter.Endpoint, handler.LastRequest.RequestUri!.ToString());
         Assert.Equal("AIza-real-key",
             handler.LastRequest.Headers.GetValues("x-goog-api-key").Single());
-        Assert.Contains("\"uses\":1", handler.LastBody);
+        // The deployed REST shape: a flat AuthToken — no liveConnectConstraints
+        // wrapper (rejected by the live endpoint), no uses (a union sibling of the
+        // setup; unset means the default of 1).
         Assert.Contains("\"newSessionExpireTime\":\"2026-10-21T12:10:00Z\"", handler.LastBody);
+        Assert.Contains("\"bidiGenerateContentSetup\":", handler.LastBody);
+        Assert.DoesNotContain("liveConnectConstraints", handler.LastBody);
+        Assert.DoesNotContain("\"uses\"", handler.LastBody);
         Assert.Contains("\"model\":\"models/gemini-3.8-live\"", handler.LastBody);
         Assert.Contains("\"functionDeclarations\"", handler.LastBody);
         Assert.Contains("\"automaticActivityDetection\":{\"disabled\":true}", handler.LastBody);

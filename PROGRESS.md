@@ -237,3 +237,20 @@ CI (`.github/workflows/ci.yml`) runs the same on every push to `main`; poll
 - Multi-agent work log: `../worklog.md` (append, never overwrite).
 - Secrets: the GitHub token arrives in chat only. Extract with
   `grep -oE 'ghp_…' <upload file>` inside a single command; redact from all output.
+
+## M2.6 — the mint wire-shape fix (2026-10-21)
+
+The first Gemini port minted with the docs' curl shape and every hold-to-ask died
+with `400 Unknown name "liveConnectConstraints" at 'auth_token'`. Probing the live
+endpoint (AI Studio key, masked) showed the deployed REST API differs from the
+published examples: `POST /v1beta/auth_tokens` takes a **flat `AuthToken` body**
+whose `bidiGenerateContentSetup` carries the model and the whole session. The docs'
+`liveConnectConstraints` wrapper doesn't exist on the wire, and `uses` is a *union
+sibling* of the setup so it can't ride along either (unset = the default 1, which is
+what we want). Inside the setup, `responseModalities` and `speechConfig` nest under
+`generationConfig` (the SDK flattens them; the raw REST does not).
+
+`RealtimeSpec.Setup()` now emits exactly that shape and `MintRequestBody` wraps it
+flat; the phone side (Constrained endpoint, access_token, manual activity,
+16 kHz audio, output-transcription bubbles) was already correct and is untouched.
+99 Windows + 100 Android tests green.

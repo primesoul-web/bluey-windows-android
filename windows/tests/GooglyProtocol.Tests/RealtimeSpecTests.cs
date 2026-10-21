@@ -68,35 +68,40 @@ public class RealtimeSpecTests
     }
 
     [Fact]
-    public void LiveConfig_HasTheExactShape()
+    public void Setup_HasTheExactShape()
     {
-        var config = RealtimeSpec.LiveConfig(null, computerControl: true);
+        var setup = RealtimeSpec.Setup(null, computerControl: true, model: null);
+
+        // The setup names the model — required, and what the token locks the session to.
+        Assert.Equal("models/gemini-3.8-live", (string?)setup["model"]);
 
         // He never talks out loud: the model answers in audio and the phone shows the
         // output transcription as his bubble (native-audio models can't answer text-only).
-        var modalities = Assert.IsType<JsonArray>(config["responseModalities"]);
+        // On the wire, modalities and voice are generationConfig fields.
+        var generation = Assert.IsType<JsonObject>(setup["generationConfig"]);
+        var modalities = Assert.IsType<JsonArray>(generation["responseModalities"]);
         Assert.Equal(["AUDIO"], modalities.Select(m => (string?)m));
 
-        var speech = Assert.IsType<JsonObject>(Assert.IsType<JsonObject>(config["speechConfig"])["voiceConfig"]);
+        var speech = Assert.IsType<JsonObject>(Assert.IsType<JsonObject>(generation["speechConfig"])["voiceConfig"]);
         Assert.Equal(RealtimeSpec.Voice,
             (string?)Assert.IsType<JsonObject>(speech["prebuiltVoiceConfig"])["voiceName"]);
 
         // The system instruction is the original's instructions, verbatim.
-        var parts = Assert.IsType<JsonArray>(Assert.IsType<JsonObject>(config["systemInstruction"])["parts"]);
+        var parts = Assert.IsType<JsonArray>(Assert.IsType<JsonObject>(setup["systemInstruction"])["parts"]);
         Assert.Equal(RealtimeSpec.Instructions(null, true), (string?)parts[0]?["text"]);
 
         // Manual activity detection: the server never answers on its own — the phone
         // signals activity around a held question (the create_response:false stand-in).
         var vad = Assert.IsType<JsonObject>(
-            Assert.IsType<JsonObject>(config["realtimeInputConfig"])["automaticActivityDetection"]);
+            Assert.IsType<JsonObject>(setup["realtimeInputConfig"])["automaticActivityDetection"]);
         Assert.Equal(true, (bool?)vad["disabled"]);
 
         // Both transcriptions feed the saved session transcript.
-        Assert.NotNull(config["inputAudioTranscription"]);
-        Assert.NotNull(config["outputAudioTranscription"]);
+        Assert.NotNull(setup["inputAudioTranscription"]);
+        Assert.NotNull(setup["outputAudioTranscription"]);
 
         // All-day sessions stay inside the context window.
-        var compression = Assert.IsType<JsonObject>(config["contextWindowCompression"]);
+        var compression = Assert.IsType<JsonObject>(setup["contextWindowCompression"]);
         Assert.NotNull(compression["slidingWindow"]);
     }
 
@@ -163,21 +168,25 @@ public class RealtimeSpecTests
     }
 
     [Fact]
-    public void MintRequestBody_LocksTheConfigIntoASingleUseTenMinuteToken()
+    public void MintRequestBody_IsAFlatAuthTokenWithTheBakedSetup()
     {
         var body = RealtimeSpec.MintRequestBody(null, computerControl: false, null, FixedNow);
 
-        Assert.Equal(1, (int?)body["uses"]);
         // The original's 600 s secret TTL: ten minutes to start a session…
         Assert.Equal("2026-10-21T12:10:00Z", (string?)body["newSessionExpireTime"]);
         // …and the documented 30-minute default for messages on the connection.
         Assert.Equal("2026-10-21T12:30:00Z", (string?)body["expireTime"]);
 
-        var constraints = Assert.IsType<JsonObject>(body["liveConnectConstraints"]);
-        Assert.Equal("models/gemini-3.8-live", (string?)constraints["model"]);
-        var config = Assert.IsType<JsonObject>(constraints["config"]);
+        // The deployed REST shape (probe-verified): a flat AuthToken whose
+        // bidiGenerateContentSetup carries the model and the whole session. The docs'
+        // liveConnectConstraints wrapper is rejected by the live endpoint, and "uses"
+        // is a union sibling of the setup, so neither may appear here.
+        var setup = Assert.IsType<JsonObject>(body["bidiGenerateContentSetup"]);
+        Assert.Equal("models/gemini-3.8-live", (string?)setup["model"]);
+        Assert.Null(body["liveConnectConstraints"]);
+        Assert.Null(body["uses"]);
         Assert.Equal(RealtimeSpec.Instructions(null, false),
-            (string?)((JsonArray?)config["systemInstruction"]?["parts"])?[0]?["text"]);
+            (string?)((JsonArray?)setup["systemInstruction"]?["parts"])?[0]?["text"]);
     }
 
     [Fact]
