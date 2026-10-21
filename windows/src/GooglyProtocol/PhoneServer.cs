@@ -37,6 +37,11 @@ public sealed class PhoneServer : IDisposable
     /// <summary>Raised every time the listener (re)starts, with the port it bound.</summary>
     public event Action<int>? Started;
 
+    /// <summary>Diagnostic sink (port addition): connections, disconnects, every command
+    /// received and any undecodable line, so a broken request path can be traced in
+    /// %APPDATA%\Googly\log.txt. May be invoked from socket threads.</summary>
+    public Action<string>? Log { get; set; }
+
     public int Port { get; private set; }
 
     public PhoneServer(string? hostName = null, int port = DefaultPort)
@@ -133,6 +138,9 @@ public sealed class PhoneServer : IDisposable
             _clients[id] = client;
         }
 
+        try { Log?.Invoke($"phone #{id} connected from {tcp.Client.RemoteEndPoint}"); }
+        catch { /* diagnostics must never break the server */ }
+
         try
         {
             // Handshake: the PC greets right when the socket is ready, then re-sends the
@@ -154,7 +162,11 @@ public sealed class PhoneServer : IDisposable
         try
         {
             var stream = tcp.GetStream();
-            var framer = new LineFramer();
+            var framer = new LineFramer
+            {
+                OnInvalidLine = line => Log?.Invoke($"phone #{id} sent an undecodable line ({line.Length} chars): " +
+                    (line.Length <= 120 ? line : line[..120] + "…")),
+            };
             var buffer = new byte[1024 * 1024]; // 1 MiB reads, like the original
             while (!ct.IsCancellationRequested)
             {
@@ -179,6 +191,8 @@ public sealed class PhoneServer : IDisposable
         }
         finally
         {
+            try { Log?.Invoke($"phone #{id} disconnected"); }
+            catch { /* diagnostics must never break the server */ }
             Remove(client);
         }
     }
@@ -197,6 +211,13 @@ public sealed class PhoneServer : IDisposable
 
         if (packet.Command is not null)
         {
+            // Diagnostic trace of every command a phone sends (port addition): the
+            // face stream never carries a command, so this stays low-volume. The text
+            // preview catches the phone's own error captions (e.g. its give-up message)
+            // arriving here — proof the phone-to-PC direction works at that moment.
+            var preview = packet.Text is { Length: > 0 } t ? " text=\"" + (t.Length <= 60 ? t : t[..60] + "…") + "\"" : "";
+            try { Log?.Invoke($"phone #{client.Id} -> {packet.Command} callID={packet.CallID ?? "-"}{preview}"); }
+            catch { /* diagnostics must never break the server */ }
             try { RequestReceived?.Invoke(packet, reply => SendTo(client, reply)); }
             catch { /* handler errors must not kill the connection */ }
         }

@@ -120,24 +120,39 @@ public sealed class RealtimeHost
 
     private async void MintFor(Packet packet, Action<Packet> reply)
     {
+        var started = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             Log?.Invoke($"minting live token (model {_settings.RealtimeModel}, control {_settings.ComputerControl})");
             var (token, model) = await _minter.MintAsync(
                 _keys.Get("gemini"), _settings.Personality, _settings.ComputerControl,
                 _settings.RealtimeModel).ConfigureAwait(true);
-            Log?.Invoke($"mint ok for model {model}");
+            Log?.Invoke($"mint ok for model {model} in {started.ElapsedMilliseconds} ms");
             reply(new Packet { Command = "realtimeToken", CallID = packet.CallID, Text = token, Model = model });
         }
         catch (RealtimeMintException e)
         {
-            Log?.Invoke($"mint failed: {e.Message}");
+            Log?.Invoke($"mint failed after {started.ElapsedMilliseconds} ms: {e.Message}");
             // The phone shows the reason on its screen (error is a port addition);
             // the PC keeps its own caption too.
             reply(new Packet { Command = "realtimeToken", CallID = packet.CallID, Text = null, Error = e.Message });
             ShowCaption(e.Message, forSeconds: 6);
         }
+        catch (Exception e)
+        {
+            // Anything else (a DPAPI failure, a spec bug, an unexpected runtime error)
+            // must still reach the phone — an async-void escape would leave it waiting
+            // for its 20-second give-up watchdog with no reason (port addition).
+            var message = "Gemini wouldn't start a voice session: something went wrong on the PC — " +
+                $"see the log ({e.GetType().Name}: {Truncate(e.Message, 120)}).";
+            Log?.Invoke($"mint threw {e.GetType().Name} after {started.ElapsedMilliseconds} ms: {e}");
+            reply(new Packet { Command = "realtimeToken", CallID = packet.CallID, Text = null, Error = message });
+            ShowCaption(message, forSeconds: 6);
+        }
     }
+
+    private static string Truncate(string s, int max) =>
+        string.IsNullOrEmpty(s) ? "" : (s.Length <= max ? s : s[..max] + "…");
 
     public void SetAwake(bool on)
     {

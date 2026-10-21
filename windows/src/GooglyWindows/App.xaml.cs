@@ -24,6 +24,7 @@ public partial class App : Application
     private RealtimeMinter _minter = null!;
     private CaptionWindow _captions = null!;
     private RealtimeHost _host = null!;
+    private GeminiSelfTest _selfTest = null!;
 
     private string _logPath = null!;
 
@@ -55,8 +56,9 @@ public partial class App : Application
         _host = new RealtimeHost(_settings, _keys, _minter, _captions);
         _host.Changed += UpdateTray;
         _host.Log += Log;
+        _selfTest = new GeminiSelfTest(_settings, _keys, _minter, _captions, Log);
 
-        _server = new PhoneServer(hostName);
+        _server = new PhoneServer(hostName) { Log = Log };
         _server.Started += port => Dispatcher.BeginInvoke(() =>
         {
             try { _advertiser.Dispose(); } catch { /* not started yet */ }
@@ -85,6 +87,7 @@ public partial class App : Application
         _tray.QuitRequested += Quit;
         _tray.EditKeysRequested += EditKeys;
         _tray.EditPersonalityRequested += EditPersonality;
+        _tray.TestGeminiRequested += _selfTest.RunFromTray;
         UpdateTray();
 
         _hotKeys = new HotKeys(_tray.Hwnd);
@@ -188,9 +191,18 @@ public partial class App : Application
         Shutdown();
     }
 
+    /// <summary>File log — thread-safe (the phone server logs from socket threads).</summary>
+    private readonly object _logGate = new();
+
     private void Log(string message)
     {
-        try { File.AppendAllText(_logPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}\n"); }
+        try
+        {
+            lock (_logGate)
+            {
+                File.AppendAllText(_logPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}\n");
+            }
+        }
         catch { /* logging must never crash the app */ }
     }
 

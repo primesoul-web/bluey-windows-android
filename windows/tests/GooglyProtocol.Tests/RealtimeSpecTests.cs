@@ -194,4 +194,39 @@ public class RealtimeSpecTests
     {
         Assert.Equal("\n---REPORT---\n", RealtimeSpec.ReportMarker);
     }
+
+    [Fact]
+    public void ConstrainedEndpoint_MatchesThePhonesTransport()
+    {
+        // The phone's LiveVoiceTransport.kt builds this exact URL; the PC's self-test
+        // must exercise the identical leg, byte for byte.
+        Assert.Equal(
+            "wss://generativelanguage.googleapis.com/ws/" +
+            "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained",
+            RealtimeSpec.ConstrainedEndpoint);
+        Assert.StartsWith("wss://generativelanguage.googleapis.com/", RealtimeSpec.ConstrainedEndpointAlternate);
+        Assert.EndsWith("/constrained", RealtimeSpec.ConstrainedEndpointAlternate);
+        Assert.NotEqual(RealtimeSpec.ConstrainedEndpoint, RealtimeSpec.ConstrainedEndpointAlternate);
+    }
+
+    [Fact]
+    public void MinimalMintBody_IsAFlatAuthTokenWithTheEssentialsOnly()
+    {
+        // Port addition (diagnostics): the self-test's fallback mint carries the model,
+        // AUDIO modality, the voice and manual activity — and nothing the full spec
+        // could have gotten wrong (no tools, no transcriptions, no compression).
+        var body = RealtimeSpec.MintRequestBodyMinimal(null, FixedNow);
+        Assert.Equal("2026-10-21T12:30:00Z", (string?)body["expireTime"]);
+        Assert.Equal("2026-10-21T12:10:00Z", (string?)body["newSessionExpireTime"]);
+        var setup = Assert.IsType<JsonObject>(body["bidiGenerateContentSetup"]);
+        Assert.Equal("models/gemini-3.8-live", (string?)setup["model"]);
+        Assert.Equal("AUDIO", (string?)((JsonArray?)setup["generationConfig"]?["responseModalities"])?[0]);
+        Assert.Equal(
+            (string?)RealtimeSpec.Setup(null, false, null)?["generationConfig"]?["speechConfig"]?["voiceConfig"]?["prebuiltVoiceConfig"]?["voiceName"],
+            (string?)setup["generationConfig"]?["speechConfig"]?["voiceConfig"]?["prebuiltVoiceConfig"]?["voiceName"]);
+        Assert.Equal(true, (bool?)setup["realtimeInputConfig"]?["automaticActivityDetection"]?["disabled"]);
+        Assert.Null(setup["tools"]);
+        Assert.Null(setup["systemInstruction"]);
+        Assert.Null(setup["contextWindowCompression"]);
+    }
 }

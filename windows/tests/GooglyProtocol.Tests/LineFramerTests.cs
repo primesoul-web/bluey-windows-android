@@ -88,4 +88,22 @@ public class LineFramerTests
         Assert.Equal(Mood.happy, packet.Face!.Mood);
         Assert.Equal(0.5, packet.Face.GazeX);
     }
+
+    [Fact]
+    public void Invalid_lines_are_reported_to_the_diagnostic_hook()
+    {
+        // Port addition: the server logs undecodable lines so a peer sending something
+        // unexpected is visible in the log instead of silently dropped.
+        var reported = new List<string>();
+        var framer = new LineFramer { OnInvalidLine = reported.Add };
+        var chunk = Encoding.UTF8.GetBytes(
+            "garbage\n" +
+            "{\"command\":\"wake\"}\n" +
+            "\n" + // empty line: dropped but not worth reporting
+            "{not json}\n");
+        var packets = framer.Feed(chunk);
+        Assert.Single(packets);
+        Assert.Equal("wake", packets[0].Command);
+        Assert.Equal(new[] { "garbage", "{not json}" }, reported);
+    }
 }

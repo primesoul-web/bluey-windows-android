@@ -16,6 +16,21 @@ public static class RealtimeSpec
     /// <summary>The default Live model (settings can override; the reply tells the phone).</summary>
     public const string Model = "gemini-3.8-live";
 
+    /// <summary>The raw WebSocket endpoint the phone rides a minted token on (the
+    /// Constrained form: the session config is locked inside the token). The phone's
+    /// LiveVoiceTransport uses the identical string — declared here too so the PC's
+    /// self-test exercises the exact same leg.</summary>
+    public const string ConstrainedEndpoint =
+        "wss://generativelanguage.googleapis.com/ws/" +
+        "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained";
+
+    /// <summary>The docs' alternate spelling of the constrained endpoint (path form with
+    /// a /constrained suffix) — the self-test falls back to it so a wrong URL can be
+    /// told apart from other session-leg failures in one round trip.</summary>
+    public const string ConstrainedEndpointAlternate =
+        "wss://generativelanguage.googleapis.com/" +
+        "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent/constrained";
+
     /// <summary>The TTS voice he "speaks" with. His replies reach the user as text bubbles
     /// (via output transcription — native-audio models can't answer text-only), so this
     /// only shapes the generated audio we never play; Puck is the reference voice.</summary>
@@ -283,6 +298,36 @@ public static class RealtimeSpec
             ["bidiGenerateContentSetup"] = Setup(savedPersonality, computerControl, modelName)
         };
     }
+
+    /// <summary>The bare-minimum mint body (port addition, diagnostics only): model +
+    /// AUDIO modality + manual activity, nothing else. The tray self-test retries with
+    /// this when the full spec is rejected, so the offending optional field (tools,
+    /// transcriptions, compression…) can be named in one user round trip. Never used by
+    /// the real mint path.</summary>
+    public static JsonObject MintRequestBodyMinimal(string? model, DateTime utcNow) => new()
+    {
+        ["expireTime"] = Timestamp(utcNow.AddMinutes(30)),
+        ["newSessionExpireTime"] = Timestamp(utcNow.AddSeconds(600)),
+        ["bidiGenerateContentSetup"] = new JsonObject
+        {
+            ["model"] = "models/" + ModelName(model),
+            ["generationConfig"] = new JsonObject
+            {
+                ["responseModalities"] = new JsonArray("AUDIO"),
+                ["speechConfig"] = new JsonObject
+                {
+                    ["voiceConfig"] = new JsonObject
+                    {
+                        ["prebuiltVoiceConfig"] = new JsonObject { ["voiceName"] = Voice },
+                    },
+                },
+            },
+            ["realtimeInputConfig"] = new JsonObject
+            {
+                ["automaticActivityDetection"] = new JsonObject { ["disabled"] = true },
+            },
+        },
+    };
 
     /// <summary>RFC 3339 UTC, second precision — the format the docs' examples use.</summary>
     private static string Timestamp(DateTime t) =>

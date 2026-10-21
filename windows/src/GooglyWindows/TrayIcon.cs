@@ -31,6 +31,8 @@ public sealed class TrayIcon : IDisposable
     public event Action? QuitRequested;
     public event Action? EditKeysRequested;
     public event Action? EditPersonalityRequested;
+    /// <summary>Port addition (diagnostics): the user picked “Test Gemini Connection…”.</summary>
+    public event Action? TestGeminiRequested;
     /// <summary>Forwards WM_HOTKEY (the argument is the hotkey id).</summary>
     public event Action<int>? HotKeyMessage;
 
@@ -173,6 +175,11 @@ public sealed class TrayIcon : IDisposable
         var key = new MenuItem { Header = "Gemini API Key…" };
         key.Click += (_, _) => EditKeysRequested?.Invoke();
         menu.Items.Add(key);
+
+        // Port addition (diagnostics): mint + session-leg check with no phone involved.
+        var test = new MenuItem { Header = "Test Gemini Connection…" };
+        test.Click += (_, _) => TestGeminiRequested?.Invoke();
+        menu.Items.Add(test);
 
         menu.Items.Add(new Separator());
         var quit = new MenuItem { Header = "Quit Bluey" };
