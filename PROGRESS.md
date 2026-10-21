@@ -52,7 +52,7 @@ Android client**. Repo: `primesoul-web/bluey-windows-android` (public, Unlicense
 | M0 | Repo skeleton, PARITY.md, shared-protocol spec + fixtures, CI | ✅ done (`189c4e5`) |
 | CI | Windows EXE publish + Android APK build (+ protocol job) | ✅ done (`6672c3a`) |
 | M1 | Protocol + pairing (codec, mDNS, tray skeleton, PairingView, 96 tests) | ✅ done (`ad108a9`, CI green) |
-| M2 | Realtime voice + character (mint, WSS, hold-to-ask, chirp, FaceView, sessions) | ✅ done (`eebac91` → retargeted to Gemini Live 2026-10-21, see below) |
+| M2 | Realtime voice + character (mint, WSS, hold-to-ask, chirp, FaceView, sessions) | ✅ done (`eebac91` → retargeted to Gemini Live in `cbbd489`, CI green — 93 Windows + 87 Android tests, EXE + APK artifacts) |
 | M3 | Pointing + overlay + research cards | ⬜ next |
 | M4 | Computer control (click/type/scroll/drag/open, SendInput) | ⬜ |
 | M5 | Meeting notes (AAC chunks, diarized transcription, `Documents\Bluey Notes\`) | ⬜ |
