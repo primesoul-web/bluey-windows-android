@@ -11,7 +11,7 @@ namespace GooglyWindows;
 /// </summary>
 public sealed class KeyWindow : Window
 {
-    public KeyWindow(ApiKeyStore keys)
+    public KeyWindow(ApiKeyStore keys, HostSettings settings)
     {
         Title = "Gemini API Key";
         Width = 420;
@@ -24,7 +24,7 @@ public sealed class KeyWindow : Window
         var field = new PasswordBox { Height = 28 };
         var hint = new TextBlock
         {
-            Text = saved is null ? "AIza…" : "Key saved. Paste a new one to replace it.",
+            Text = saved is null ? "AQ.…" : "Key saved. Paste a new one to replace it.",
             Foreground = System.Windows.Media.Brushes.Gray,
             VerticalAlignment = VerticalAlignment.Center,
             IsHitTestVisible = false,
@@ -36,6 +36,10 @@ public sealed class KeyWindow : Window
         fieldGrid.Children.Add(field);
         fieldGrid.Children.Add(hint);
 
+        // Port addition: the Live model the sessions are minted for, editable for the
+        // day Google renames it (or a key lacks access to it) without shipping a build.
+        var modelField = new TextBox { Height = 28, Text = settings.RealtimeModel };
+
         var cancel = new Button { Content = "Cancel", MinWidth = 88, Height = 30 };
         cancel.Click += (_, _) => DialogResult = false;
         var save = new Button { Content = "Save", MinWidth = 88, Height = 30, IsDefault = true };
@@ -43,6 +47,7 @@ public sealed class KeyWindow : Window
         {
             var key = field.Password.Trim();
             if (key.Length > 0) keys.Set("gemini", key);
+            settings.RealtimeModel = modelField.Text.Trim();
             DialogResult = true;
         };
 
@@ -60,12 +65,28 @@ public sealed class KeyWindow : Window
         });
         root.Children.Add(new TextBlock
         {
-            Text = "From aistudio.google.com/api-keys. Saved privately on this PC (not in the project files). The phone only ever gets short-lived keys.",
+            Text = "From aistudio.google.com/api-keys — use Copy key there and paste it here. Saved privately on this PC (not in the project files). The phone only ever gets short-lived keys.",
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.75,
             Margin = new Thickness(0, 0, 0, 14),
         });
         root.Children.Add(fieldGrid);
+        root.Children.Add(new TextBlock
+        {
+            Text = "Live model (advanced)",
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            Opacity = 0.75,
+            Margin = new Thickness(0, 14, 0, 4),
+        });
+        root.Children.Add(modelField);
+        root.Children.Add(new TextBlock
+        {
+            Text = $"The realtime model sessions are minted for — default {RealtimeSpec.Model}. Only change it if a mint error says the model is wrong.",
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.6,
+            Margin = new Thickness(0, 4, 0, 14),
+        });
         root.Children.Add(buttons);
 
         Content = root;

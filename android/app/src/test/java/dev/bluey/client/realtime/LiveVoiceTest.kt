@@ -152,7 +152,7 @@ class LiveVoiceTest {
     private fun TestScope.pump() = runCurrent()
 
     @Test
-    fun `wake sends the setup then starts the mic the session and a two-syllable chirp`() = runTest {
+    fun `wake brings him up the moment the token arrives - mic, session, chirp, listening`() = runTest {
         var sessionStarted = 0
         val live = build()
         live.onSessionStart = { sessionStarted++ }
@@ -161,14 +161,78 @@ class LiveVoiceTest {
 
         // The setup naming the minted model is the first thing on the wire.
         assertEquals("""{"setup":{"model":"models/gemini-3.8-live"}}""", transport.sent.first())
-        assertEquals(LiveVoice.State.Waking, live.state) // nothing runs before setupComplete
-
-        transport.ready()
-
+        // Original parity: with the token in hand he's already up — mic on (it started
+        // at wake, before the token), session started, two-syllable chirp, listening —
+        // without waiting for the server to acknowledge the setup.
         assertEquals(1, mic.started)
         assertEquals(1, sessionStarted)
-        assertEquals(1, chirp.played.size) // chirp(syllables: 2) on connect
+        assertEquals(1, chirp.played.size)
         assertEquals(LiveVoice.State.Listening, live.state)
+
+        transport.ready() // setupComplete just flushes what queued meanwhile
+
+        assertEquals(LiveVoice.State.Listening, live.state)
+    }
+
+    @Test
+    fun `the mic comes on the moment he wakes, before the token arrives`() = runTest {
+        var handBack: ((String?, String?, String?) -> Unit)? = null
+        val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
+        val live = LiveVoice(scope = scope, makeTransport = { transport }, mic = mic, chirps = chirp).apply {
+            requestToken = { done -> handBack = done } // the PC is slow to mint
+        }
+
+        live.wake()
+
+        assertEquals(1, mic.started) // green light right away, like the original
+        assertEquals(LiveVoice.State.Waking, live.state)
+
+        handBack?.invoke("auth_tokens/slowly-minted", "gemini-3.8-live", null)
+
+        assertEquals(LiveVoice.State.Listening, live.state) // up on the token, pre-ack
+    }
+
+    @Test
+    fun `a wake that never gets a token gives up after twenty seconds`() = runTest {
+        var sessionError: String? = null
+        val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
+        val live = LiveVoice(scope = scope, makeTransport = { transport }, mic = mic, chirps = chirp).apply {
+            requestToken = { _ -> } // the mint never comes back
+            onSessionError = { sessionError = it }
+        }
+
+        live.wake()
+        assertEquals(1, mic.started) // the mic was already on
+        assertEquals(LiveVoice.State.Waking, live.state)
+
+        advanceTimeBy(20_000)
+        pump()
+
+        assertTrue(sessionError!!.contains("taking too long"))
+        assertEquals(LiveVoice.State.Asleep, live.state)
+        assertEquals(1, mic.stopped) // tidied away, ready to try again
+        assertFalse(transport.open)
+    }
+
+    @Test
+    fun `a stale wake watchdog cannot fire into a later wake`() = runTest {
+        val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
+        var token: String? = null
+        val live = LiveVoice(scope = scope, makeTransport = { transport }, mic = mic, chirps = chirp).apply {
+            requestToken = { done -> done(token, null, null) }
+        }
+
+        live.wake() // wake 1: no token, stays Waking…
+        token = "second-attempt-token"
+        // …but before the watchdog fires the user tries again (sleep then wake).
+        live.sleep()
+        live.wake()
+        assertEquals(LiveVoice.State.Listening, live.state)
+
+        advanceTimeBy(25_000) // the first wake's watchdog comes due
+        pump()
+
+        assertEquals(LiveVoice.State.Listening, live.state) // the session lives on
     }
 
     @Test
@@ -285,8 +349,11 @@ class LiveVoiceTest {
     fun `holding while asleep wakes him straight into asking`() = runTest {
         val live = build()
         live.beginAsk() // before wake: wakes with the finger still down
-        assertEquals(LiveVoice.State.Waking, live.state) // waiting on the locked session
-        live.endAsk() // let go early: askWhenReady
+        // The token arrives synchronously in tests — he's up and asking already
+        // (connect-time transition, like the original).
+        assertEquals(LiveVoice.State.Asking, live.state)
+        live.endAsk() // let go: the ask goes out
+        assertEquals(LiveVoice.State.Thinking, live.state)
         transport.ready()
         assertEquals(LiveVoice.State.Thinking, live.state)
         assertTrue(transport.sentText("activityEnd").isNotEmpty())

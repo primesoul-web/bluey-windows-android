@@ -53,7 +53,8 @@ Android client**. Repo: `primesoul-web/bluey-windows-android` (public, Unlicense
 | CI | Windows EXE publish + Android APK build (+ protocol job) | ✅ done (`6672c3a`) |
 | M1 | Protocol + pairing (codec, mDNS, tray skeleton, PairingView, 96 tests) | ✅ done (`ad108a9`, CI green) |
 | M2 | Realtime voice + character (mint, WSS, hold-to-ask, chirp, FaceView, sessions) | ✅ done (`eebac91` → retargeted to Gemini Live in `cbbd489`, CI green — 93 Windows + 87 Android tests, EXE + APK artifacts) |
-| M2-hardening | First hardware test round: fixed port 51826, typed PC address (USB tethering), adb-reverse probe, phone-side error surfacing, 3-strikes transport cap | ✅ done (2026-10-21, after the user's first real test — 96 Windows + 97 Android tests) |
+| M2-hardening | Round 1: fixed port 51826, typed PC address (USB tethering), adb-reverse probe, error wire field, phone-side error surfacing, 3-strikes transport cap | ✅ done (`f57c324`, CI green — 96 Windows + 97 Android) |
+| M2-hardening-2 | Round 2: original-parity wake (mic at wake, connect-time chirp/listening), 20 s wake watchdog, 15 s mint timeout + actionable errors, sticky errors, Live-model field | ✅ done (2026-10-21, after the user's second test — 99 Windows + 100 Android) |
 | M3 | Pointing + overlay + research cards | ⬜ next |
 | M4 | Computer control (click/type/scroll/drag/open, SendInput) | ⬜ |
 | M5 | Meeting notes (AAC chunks, diarized transcription, `Documents\Bluey Notes\`) | ⬜ |
@@ -140,6 +141,35 @@ Fixes (all tested; see PARITY.md D12): fixed port **51826** + ephemeral fallback
 4. Hold the screen ≥ 0.3 s and talk; the phone should chirp on wake (mic on, green
    light), and replies appear as the PC caption bubble + phone transcript.
 5. If anything fails, the phone now says why; `%APPDATA%\Googly\log.txt` has the PC side.
+
+## Second hardware test round — what happened (2026-10-21)
+
+The user ran the `f57c324` build: tray showed **“Phone connected: Redmi Note 10S”** and
+`Listening on port 51826 — 10.237.187.192` — i.e. the phone↔PC link works over USB
+tethering (mDNS crossed it on this device), so the pairing screen (and its address
+box) never appeared — it only shows while disconnected. The failure was the Gemini
+session: hold-to-ask → smile (Waking) → no mic, no reply, no visible error.
+
+**How the original owner did it** (read from `study/bluey-by-riley/iOS/Sources/LiveVoice.swift`):
+- The mic starts **inside `connect(token)`** — the moment the token arrives — together
+  with `onSessionStart`, the two-syllable chirp and the listening state, all BEFORE any
+  server acknowledgement. No “session ready” gating existed.
+- The Mac minted keys locally in ~1 s, so a wake either came up in a blink or (on
+  failure) the Mac showed his error bubble (“I need an OpenAI API key…”).
+- Setup was just: same Wi-Fi, Bonjour, key in the menu bar (original README).
+
+**The port's drift (D13):** everything was gated on `setupComplete` — a Gemini endpoint
+  requirement for the wire — but the mic/chirp/state must not be. Fixed: mic at wake,
+  session+chirp+Listening at connect-time, 20 s wake watchdog, 15 s mint timeout,
+  actionable mint errors, sticky phone errors, “Waking up — connecting…” note,
+  Live-model field in the key sheet. A hung/unreachable mint can no longer smile forever.
+
+**Still unknown until the next test:** which of these the user actually hit — the
+log.txt (`mint ok` / `mint failed: <reason>`) will say. The likely candidates: rejected
+key (typed with an I/l mix-up — the chat-pasted key authenticated fine in the sandbox
+probe, so whatever is stored on the PC should be re-copied with **Copy key**), a slow
+mint over mobile-data tethering (now times out at 15 s), or the phone's WSS to Gemini
+(now covered by the strikes + watchdog with visible messages).
 
 ## M2 detailed checklist (working copy — PARITY.md is the contract)
 

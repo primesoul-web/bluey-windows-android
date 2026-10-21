@@ -14,23 +14,35 @@ public sealed class RealtimeMinter
 {
     public const string Endpoint = "https://generativelanguage.googleapis.com/v1beta/auth_tokens";
 
+    /// <summary>How long a mint may take before giving up with a clear message
+    /// (port addition: HttpClient's 100 s default meant an unreachable Google could
+    /// leave the phone smiling in "Waking" forever).</summary>
+    public TimeSpan Timeout { get; } = TimeSpan.FromSeconds(15);
+
     private readonly HttpClient _client;
     private readonly Func<DateTime> _clock;
 
-    public RealtimeMinter(HttpMessageHandler? handler = null, Func<DateTime>? clock = null)
+    public RealtimeMinter(HttpMessageHandler? handler = null, Func<DateTime>? clock = null,
+        TimeSpan? timeout = null)
     {
         _client = handler is null ? new HttpClient() : new HttpClient(handler);
+        Timeout = timeout ?? TimeSpan.FromSeconds(15);
+        _client.Timeout = Timeout;
         _clock = clock ?? (() => DateTime.UtcNow);
     }
 
-    /// <summary>Why a mint failed, with the exact user-facing wording (shown as a caption).</summary>
+    /// <summary>Why a mint failed, with the exact user-facing wording (shown as a caption
+    /// on the PC and, via the error wire field, on the phone).</summary>
     public static class TokenError
     {
         public const string NoKey =
             "I need a Gemini API key. Add one under Gemini API Key in the tray menu.";
 
         public static string Failed(string why) =>
-            "Gemini wouldn't start a voice session: " + Truncate(why, 160);
+            "Gemini wouldn't start a voice session: " + Truncate(why, 200);
+
+        public static string TimeoutExceeded =>
+            "Gemini wouldn't start a voice session: this PC couldn't reach Google in 15 seconds — check the internet connection.";
 
         private static string Truncate(string s, int max) =>
             s.Length <= max ? s : s[..max];
@@ -58,8 +70,11 @@ public sealed class RealtimeMinter
         {
             response = await _client.SendAsync(request, ct).ConfigureAwait(false);
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException
-            and not OperationCanceledException)
+        catch (TaskCanceledException) // the 15-second Timeout elapsed
+        {
+            throw new RealtimeMintException(TokenError.TimeoutExceeded);
+        }
+        catch (HttpRequestException e)
         {
             throw new RealtimeMintException(TokenError.Failed(e.Message));
         }
@@ -71,17 +86,38 @@ public sealed class RealtimeMinter
             {
                 value = JsonNode.Parse(text)?["name"]?.GetValue<string>();
             }
-            catch (InvalidOperationException)
+            catch (Exception e) when (e is InvalidOperationException or System.Text.Json.JsonException)
             {
-                // not a string / wrong shape → treated as a missing token below
+                // not a string / wrong shape / not JSON at all (an HTML proxy page, say)
+                // → treated as a missing token below
             }
             if (!response.IsSuccessStatusCode || string.IsNullOrEmpty(value))
             {
                 throw new RealtimeMintException(TokenError.Failed(
-                    $"{(int)response.StatusCode} {text}"));
+                    Explain((int)response.StatusCode, text)));
             }
             return (value!, modelName);
         }
+    }
+
+    /// <summary>Turns a rejected mint into the words the user needs to act on — a bad
+    /// key says “re-copy it”, a blocked region says “try another network”, anything
+    /// else shows the raw status and body (port addition).</summary>
+    private static string Explain(int status, string body)
+    {
+        if (status is 401 or 403)
+        {
+            return $"HTTP {status}: that Gemini API key was rejected. Re-copy it from " +
+                "aistudio.google.com/api-keys (Copy key) and paste it under Gemini API Key in the tray menu.";
+        }
+        var trimmed = body.Trim();
+        if (trimmed.Contains("location", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("FAILED_PRECONDITION", StringComparison.Ordinal))
+        {
+            return $"HTTP {status}: this network's region isn't supported by the Gemini API — " +
+                "try a different network (Wi-Fi, another hotspot, or a VPN).";
+        }
+        return $"{status} {trimmed}";
     }
 }
 

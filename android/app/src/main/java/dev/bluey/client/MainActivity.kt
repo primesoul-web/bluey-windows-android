@@ -166,6 +166,7 @@ class MainActivity : ComponentActivity() {
         live.onSessionError = { message -> sessionError.value = message }
         live.onStateChange = { state ->
             liveState.value = state
+            if (state != LiveVoice.State.Asleep) sessionError.value = null // a new attempt is under way
             when (state) {
                 LiveVoice.State.Asleep -> {
                     animator.awake = false
@@ -251,10 +252,11 @@ private fun BlueyRoot(
         animator.receive(faceState.value, now())
     }
 
-    // A session problem is never silent: show it for six seconds, then tidy away.
+    // A session problem is never silent: it stays up until the next attempt (and a
+    // 30-second tidy in case the phone gets pocketed mid-error).
     LaunchedEffect(sessionError.value) {
         if (sessionError.value != null) {
-            delay(6000)
+            delay(30_000)
             sessionError.value = null
         }
     }
@@ -307,7 +309,24 @@ private fun BlueyRoot(
             )
         }
 
+        // While the session is still coming up, say so — a smile alone tells you nothing.
+        if (liveState.value == LiveVoice.State.Waking) {
+            Text(
+                text = "Waking up — connecting to Gemini… (the mic is already on)",
+                color = Color(0xFFF4F1FA).copy(alpha = 0.8f),
+                fontSize = 12.sp,
+                fontFamily = dev.bluey.client.ui.BlueyFonts.plexSans,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 28.dp, vertical = 30.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.White.copy(alpha = 0.06f))
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            )
+        }
+
         // A session error (no PC, bad key, lost session) — bottom-center, above his face.
+        // Stays until the next wake attempt, so it can't be missed.
         sessionError.value?.let { message ->
             Text(
                 text = message,

@@ -112,6 +112,9 @@ class LiveVoice(
     private var awaitingQuestion = false
     private var toolsRunning = 0
 
+    /** Counts wake attempts, so a stale wake watchdog can't fire into a later one. */
+    private var wakeSerial = 0
+
     init {
         mic.onChunk = { samples, count -> recorder.append(samples, count) }
         mic.onAudioBase64 { base64 ->
@@ -133,12 +136,32 @@ class LiveVoice(
         if (state != State.Asleep) return
         wantAwake = true
         setState(State.Waking)
+        val serial = ++wakeSerial
         requestMicPermission { granted ->
             if (!granted) {
                 onCaption?.invoke("I need the microphone. Turn it on for Bluey in the phone's Settings.", true)
                 wantAwake = false
                 setState(State.Asleep)
                 return@requestMicPermission
+            }
+            // The mic comes on the moment he wakes — before the session is even asked
+            // for — exactly like the original ("once he's awake the mic is on the whole
+            // time"). What's said now buffers and reaches the model when the session lands.
+            try {
+                startAudio()
+            } catch (e: Exception) {
+                onCaption?.invoke("I couldn't start the microphone: ${e.message}", true)
+                wantAwake = false
+                setState(State.Asleep)
+                return@requestMicPermission
+            }
+            // Never a silent smile: if the token never comes back — a mint that hung on
+            // the PC, a PC that went away mid-request — say so and stop.
+            scope.launch {
+                delay(WAKE_TIMEOUT_MS)
+                if (wakeSerial == serial && state == State.Waking && wantAwake) {
+                    giveUp("I can't reach Gemini — it's taking too long. Check that the PC is on and online, then hold the screen to try again.")
+                }
             }
             val request = requestToken
             if (request == null) {
@@ -208,8 +231,7 @@ class LiveVoice(
             wake()
             return
         }
-        if (transport == null) return
-        if (sessionReady) send(RealtimeEvents.activityStart)
+        if (transport != null) send(RealtimeEvents.activityStart) // queues until the wire is live
         if (state == State.Listening || state == State.Speaking) setState(State.Asking)
     }
 
@@ -251,10 +273,21 @@ class LiveVoice(
         // The setup names the model; everything else about the session is locked in the
         // token the PC minted. OkHttp queues it until the socket opens, so it stays first.
         fresh.send(RealtimeEvents.setup(model))
+        if (!reconnecting) {
+            // Exactly like the original's connect(): with the token in hand he's up —
+            // mic on (it's been running since wake), session started, a chirp, and
+            // listening — without waiting for the server to acknowledge the setup.
+            // Audio and activity signals spoken meanwhile queue and flush on
+            // setupComplete; a connection that dies instead hits the strike counter.
+            onSessionStart?.invoke()
+            chirp(syllables = 2)
+            if (askWhenReady) ask() else setState(if (holding) State.Asking else State.Listening)
+        }
     }
 
-    /** The locked session is live: flush anything queued, then carry the old connect()
-     * behavior — first connections start the mic and chirp, reconnects replay context. */
+    /** The locked session is live: flush anything that queued while connecting. First
+     * connections already came up at connect() time (like the original — mic, chirp,
+     * listening); reconnects remind him what was said. */
     private fun onSessionReady() {
         sessionReady = true
         consecutiveFailures = 0
@@ -264,18 +297,8 @@ class LiveVoice(
             reconnecting = false
             val context = resumeContext?.invoke()
             if (!context.isNullOrEmpty()) send(RealtimeEvents.contextReplay(context))
-        } else {
-            try {
-                startAudio()
-            } catch (e: Exception) {
-                onCaption?.invoke("I couldn't start the microphone: ${e.message}", true)
-                sleep()
-                return
-            }
-            onSessionStart?.invoke()
-            chirp(syllables = 2)
+            if (askWhenReady) ask() else setState(if (holding) State.Asking else State.Listening)
         }
-        if (askWhenReady) ask() else setState(if (holding) State.Asking else State.Listening)
     }
 
     /** The connection dropped mid-session: get a new token and carry on, keeping the mic and recording running. */
@@ -491,6 +514,11 @@ class LiveVoice(
 
         /** Failed connects/mints in a row before giving up and saying so. */
         const val MAX_CONSECUTIVE_FAILURES = 3
+
+        /** How long a wake may sit in Waking before giving up with a message — a mint
+         * that hung on the PC or a request that never came back (port addition; the
+         * original's fast local mints never exposed this). */
+        const val WAKE_TIMEOUT_MS = 20_000L
     }
 
     private fun chirp(syllables: Int) {

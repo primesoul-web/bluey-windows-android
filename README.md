@@ -17,13 +17,14 @@ The Gemini API key (from [Google AI Studio](https://aistudio.google.com/api-keys
 
 ## Connecting the phone (troubleshooting)
 
-The PC listens on **TCP 51826** and advertises `_googly._tcp` over mDNS. Three ways the phone gets to it, in the order the app tries:
+The PC listens on **TCP 51826** and advertises `_googly._tcp` over mDNS. The tray menu is the source of truth: **"Phone connected: <name>"** means the link is fine and nothing below matters.
 
-1. **Same Wi-Fi (the normal way)** — the phone discovers the PC automatically. If it doesn't appear within a few seconds, Windows Firewall is the usual suspect: allow `Bluey.exe` (or port 51826) for private networks — one `netsh advfirewall firewall add rule name="Bluey" dir=in action=allow protocol=TCP localport=51826` in an admin prompt, or the Windows Security prompt on first run.
-2. **USB cable / USB tethering** — mDNS does not cross Android's USB-tethering link, so open Bluey's tray menu on the PC, read the line `Listening on port 51826 — <IPs>`, and type that IP into **“Can't find it?”** on the phone's pairing screen (the `192.168.x.x` that isn't your Wi-Fi's). Tethering must stay on; the phone still uses its own internet for the Gemini session.
-3. **USB cable + `adb reverse tcp:51826 tcp:51826`** — the phone then finds the PC on `127.0.0.1` by itself (probed every few seconds; no typing needed).
+- **The pairing screen (with the "Can't find it?" address box) only shows while the phone is NOT connected.** If he's already linked — or you tapped "Play without the PC" earlier — you won't see it; close and reopen the app to bring it back. On many devices mDNS actually crosses USB tethering, so the phone may connect by itself with tethering on.
+- **Same Wi-Fi** — the normal way; discovery is automatic. If it never connects: allow Bluey through Windows Firewall for private networks (admin prompt: `netsh advfirewall firewall add rule name="Bluey" dir=in action=allow protocol=TCP localport=51826`).
+- **USB cable / USB tethering** — open the tray menu, read `Listening on port 51826 — <IPs>`, and type the tether IP (the one that isn't your Wi-Fi's) into "Can't find it?" on the phone.
+- **USB cable + `adb reverse tcp:51826 tcp:51826`** — the phone then finds the PC on `127.0.0.1` by itself.
 
-Nothing fails silently: if a session can't start, the phone says why on its own screen (no PC found, or the reason the PC's mint failed — a bad key, a blocked region, no internet), and the PC writes the details to `%APPDATA%\Googly\log.txt`.
+**He smiled but never answered?** (mic light off, no reply): the wake now turns the mic on immediately and says what's wrong if the session can't start — a rejected key tells you to re-copy it from [AI Studio](https://aistudio.google.com/api-keys) (use **Copy key**, don't retype — `I` and `l` look alike), a blocked region says to try another network, and anything that hangs gives up after ~20 s with a message. The PC's side of the story is in `%APPDATA%\Googly\log.txt` (Win+R, paste that path) — `mint ok` / `mint failed: <reason>` lines for every attempt.
 
 ## Status
 

@@ -132,7 +132,7 @@ public partial class App : Application
 
     private void EditKeys()
     {
-        var window = new KeyWindow(_keys);
+        var window = new KeyWindow(_keys, _settings);
         window.ShowDialog();
     }
 

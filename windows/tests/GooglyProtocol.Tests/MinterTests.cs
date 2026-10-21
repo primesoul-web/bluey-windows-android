@@ -64,11 +64,11 @@ public class MinterTests
     }
 
     [Fact]
-    public async Task HttpError_ThrowsWithCodeBodyAndThe160CharacterCap()
+    public async Task HttpError_ThrowsWithCodeBodyAndThe200CharacterCap()
     {
         var handler = new FakeHandler
         {
-            Status = HttpStatusCode.Unauthorized,
+            Status = HttpStatusCode.InternalServerError,
             Response = "{\"error\":{\"message\":\"" + new string('x', 400) + "\"}}",
         };
         var minter = new RealtimeMinter(handler);
@@ -76,10 +76,67 @@ public class MinterTests
         var e = await Assert.ThrowsAsync<RealtimeMintException>(
             () => minter.MintAsync("AIza-bad", null, computerControl: true));
 
-        Assert.StartsWith("Gemini wouldn't start a voice session: 401 ", e.Message);
-        // "401 " + body, capped at 160 characters of the "why".
+        Assert.StartsWith("Gemini wouldn't start a voice session: 500 ", e.Message);
+        // "500 " + body, capped at 200 characters of the "why".
         Assert.True(e.Message.Length <=
-            "Gemini wouldn't start a voice session: ".Length + 160);
+            "Gemini wouldn't start a voice session: ".Length + 200);
+    }
+
+    [Fact]
+    public async Task RejectedKey_SaysReCopyItFromAiStudio()
+    {
+        var handler = new FakeHandler
+        {
+            Status = HttpStatusCode.Unauthorized,
+            Response = "{\"error\":{\"code\":401,\"message\":\"API key not valid.\"}}",
+        };
+        var minter = new RealtimeMinter(handler);
+
+        var e = await Assert.ThrowsAsync<RealtimeMintException>(
+            () => minter.MintAsync("AQ.wrong", null, computerControl: false));
+
+        Assert.Contains("that Gemini API key was rejected", e.Message);
+        Assert.Contains("aistudio.google.com/api-keys", e.Message);
+    }
+
+    [Fact]
+    public async Task RegionBlocked_SaysTryAnotherNetwork()
+    {
+        var handler = new FakeHandler
+        {
+            Status = HttpStatusCode.BadRequest,
+            Response = "{\"error\":{\"code\":400,\"message\":\"User location is not supported for the API use.\",\"status\":\"FAILED_PRECONDITION\"}}",
+        };
+        var minter = new RealtimeMinter(handler);
+
+        var e = await Assert.ThrowsAsync<RealtimeMintException>(
+            () => minter.MintAsync("AQ.real", null, computerControl: false));
+
+        Assert.Contains("region isn't supported", e.Message);
+        Assert.Contains("try a different network", e.Message);
+    }
+
+    [Fact]
+    public async Task UnreachableGoogle_TimesOutWithAClearMessage()
+    {
+        var handler = new StalledHandler();
+        var minter = new RealtimeMinter(handler, timeout: TimeSpan.FromMilliseconds(50));
+
+        var e = await Assert.ThrowsAsync<RealtimeMintException>(
+            () => minter.MintAsync("AQ-real-key", null, computerControl: false));
+
+        Assert.Contains("couldn't reach Google in 15 seconds", e.Message);
+    }
+
+    /// <summary>A transport that accepts the request and never answers.</summary>
+    private sealed class StalledHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken ct)
+        {
+            await Task.Delay(System.Threading.Timeout.Infinite, ct);
+            return new HttpResponseMessage(HttpStatusCode.OK); // never reached
+        }
     }
 
     [Fact]
