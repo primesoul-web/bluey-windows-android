@@ -6,106 +6,134 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The Realtime event codec: builders and parser, against hand-written API payloads. */
+/** The Live API message codec: builders and parser, against hand-written API payloads. */
 class RealtimeEventsTest {
 
     @Test
-    fun `builds append audio events`() {
-        val json = RealtimeEvents.appendAudio("QUJD")
-        assertEquals("""{"type":"input_audio_buffer.append","audio":"QUJD"}""", json)
+    fun `builds the setup naming the minted model`() {
+        assertEquals(
+            """{"setup":{"model":"models/gemini-3.8-live"}}""",
+            RealtimeEvents.setup("gemini-3.8-live"),
+        )
+        assertEquals(
+            """{"setup":{"model":"models/gemini-3.8-live"}}""",
+            RealtimeEvents.setup(null),
+        )
     }
 
     @Test
-    fun `builds commit and response events`() {
-        assertEquals("""{"type":"input_audio_buffer.commit"}""", RealtimeEvents.commitAudio)
-        assertEquals("""{"type":"response.create"}""", RealtimeEvents.createResponse())
-        val withInstructions = RealtimeEvents.createResponse("Reply with a quick, cheerful hi in under eight words.")
-        val parsed = Json.parseToJsonElement(withInstructions).toString()
-        assertTrue(parsed.contains("\"response\":{\"instructions\":\"Reply with a quick, cheerful hi"))
+    fun `builds realtime audio chunks at the native input rate`() {
+        assertEquals(
+            """{"realtimeInput":{"audio":{"data":"QUJD","mimeType":"audio/pcm;rate=16000"}}}""",
+            RealtimeEvents.audioChunk("QUJD"),
+        )
     }
 
     @Test
-    fun `builds tool outputs and screenshot images`() {
-        val output = RealtimeEvents.functionCallOutput("call_1", "Pointing at \"Googly\".")
-        assertTrue(output.contains("\"type\":\"function_call_output\""))
-        assertTrue(output.contains("\"call_id\":\"call_1\""))
-        assertTrue(output.contains("\"output\":\"Pointing at \\\"Googly\\\".\""))
-
-        val image = RealtimeEvents.inputImage("aGk=")
-        assertTrue(image.contains("\"type\":\"input_image\""))
-        assertTrue(image.contains("data:image/jpeg;base64,aGk="))
+    fun `builds the activity signals that frame a held question`() {
+        assertEquals("""{"realtimeInput":{"activityStart":{}}}""", RealtimeEvents.activityStart)
+        assertEquals("""{"realtimeInput":{"activityEnd":{}}}""", RealtimeEvents.activityEnd)
     }
 
     @Test
-    fun `builds the context replay with the verbatim prefix`() {
+    fun `builds tool responses matched by id`() {
+        val json = RealtimeEvents.toolResponse(
+            listOf(RealtimeEvents.ToolResult("call_1", "point_at", "Pointing at \"Googly\".")),
+        )
+        assertEquals(
+            """{"toolResponse":{"functionResponses":[{"id":"call_1","name":"point_at",""" +
+                """"response":{"result":"Pointing at \"Googly\"."}}]}}""",
+            json,
+        )
+    }
+
+    @Test
+    fun `builds screenshot turns that complete the turn like the original's input image`() {
+        val json = RealtimeEvents.imageTurn("aGk=")
+        assertEquals(
+            """{"clientContent":{"turns":[{"role":"user","parts":[{"inlineData":{""" +
+                """"mimeType":"image/jpeg","data":"aGk="}}]}],"turnComplete":true}}""",
+            json,
+        )
+    }
+
+    @Test
+    fun `builds say hi as an asking user turn`() {
+        val json = RealtimeEvents.sayHi("Reply with a quick, cheerful hi in under eight words.")
+        val parsed = Json.parseToJsonElement(json).toString()
+        assertTrue(parsed.contains("\"turnComplete\":true"))
+        assertTrue(parsed.contains("Reply with a quick, cheerful hi"))
+    }
+
+    @Test
+    fun `builds the context replay with the verbatim prefix and no turn completion`() {
         val json = RealtimeEvents.contextReplay("He said hello")
-        assertTrue(json.startsWith("""{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"(Context: what I said earlier in this session, from my notes. Don't reply to this.)\nHe said hello"}]}}"""))
+        assertTrue(json.startsWith("""{"clientContent":{"turns":[{"role":"user","parts":[{"text":"""))
+        assertTrue(json.contains("(Context: what I said earlier in this session, from my notes. Don't reply to this.)\\nHe said hello"))
+        assertTrue(json.contains("\"turnComplete\":false"))
     }
 
     @Test
-    fun `parses the events LiveVoice reacts to`() {
-        assertEquals(RealtimeEvents.Event.ResponseCreated, RealtimeEvents.parse("""{"type":"response.created"}"""))
+    fun `parses setup complete`() {
+        assertEquals(RealtimeEvents.Event.SetupComplete, RealtimeEvents.parse("""{"setupComplete":{}}"""))
+    }
 
+    @Test
+    fun `parses his reply as output transcription and the user's words as input transcription`() {
         assertEquals(
             RealtimeEvents.Event.TextDelta("Hi"),
-            RealtimeEvents.parse("""{"type":"response.output_text.delta","delta":"Hi"}"""),
+            RealtimeEvents.parse("""{"serverContent":{"outputTranscription":{"text":"Hi"}}}"""),
         )
         assertEquals(
-            RealtimeEvents.Event.TextDelta("Hi"),
-            RealtimeEvents.parse("""{"type":"response.output_audio_transcript.delta","delta":"Hi"}"""),
+            RealtimeEvents.Event.UserTranscript("what's this"),
+            RealtimeEvents.parse("""{"serverContent":{"inputTranscription":{"text":"what's this"}}}"""),
+        )
+    }
+
+    @Test
+    fun `parses turn complete and interrupted`() {
+        assertEquals(
+            RealtimeEvents.Event.TurnComplete,
+            RealtimeEvents.parse("""{"serverContent":{"turnComplete":true,"interactionStatus":"IDLE"}}"""),
         )
         assertEquals(
-            RealtimeEvents.Event.BufferCommitted("item_1"),
-            RealtimeEvents.parse("""{"type":"input_audio_buffer.committed","item_id":"item_1"}"""),
+            RealtimeEvents.Event.Interrupted,
+            RealtimeEvents.parse("""{"serverContent":{"interrupted":true}}"""),
         )
+    }
+
+    @Test
+    fun `parses tool calls with args as json and without`() {
+        val withArgs = RealtimeEvents.parse(
+            """{"toolCall":{"functionCalls":[{"name":"point_at","id":"call_9","args":{"target_id":"W12"}}]}}""",
+        ) as RealtimeEvents.Event.ToolCalls
+        assertEquals(1, withArgs.calls.size)
+        assertEquals("point_at", withArgs.calls[0].name)
+        assertEquals("call_9", withArgs.calls[0].callId)
+        assertEquals("{\"target_id\":\"W12\"}", withArgs.calls[0].arguments)
+
+        val withoutArgs = RealtimeEvents.parse(
+            """{"toolCall":{"functionCalls":[{"name":"go_to_sleep","id":"call_z"}]}}""",
+        ) as RealtimeEvents.Event.ToolCalls
+        assertEquals("{}", withoutArgs.calls[0].arguments)
+    }
+
+    @Test
+    fun `ignores model audio usage resumption notices and junk`() {
+        // His voice is the chirp — the model's audio is never played.
         assertEquals(
-            RealtimeEvents.Event.UserTranscript("item_1", "what's this"),
+            RealtimeEvents.Event.Ignored,
             RealtimeEvents.parse(
-                """{"type":"conversation.item.input_audio_transcription.completed","item_id":"item_1","transcript":"what's this"}""",
+                """{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"QUJD"}}]}}}""",
             ),
         )
-    }
-
-    @Test
-    fun `parses response done with and without function calls`() {
-        val plain = RealtimeEvents.parse("""{"type":"response.done","response":{"output":[]}}""")
-        assertEquals(RealtimeEvents.Event.ResponseDone(emptyList()), plain)
-
-        val withCall = RealtimeEvents.parse(
-            """
-            {"type":"response.done","response":{"output":[
-              {"type":"message","role":"assistant"},
-              {"type":"function_call","name":"point_at","call_id":"call_9","arguments":"{\"target_id\":\"W12\"}"}
-            ]}}
-            """.trimIndent(),
-        ) as RealtimeEvents.Event.ResponseDone
-        assertEquals(1, withCall.calls.size)
-        assertEquals("point_at", withCall.calls[0].name)
-        assertEquals("call_9", withCall.calls[0].callId)
-        assertEquals("{\"target_id\":\"W12\"}", withCall.calls[0].arguments)
-    }
-
-    @Test
-    fun `parses errors including the empty-commit code`() {
-        val plain = RealtimeEvents.parse(
-            """{"type":"error","error":{"code":"server_error","message":"boom"}}""",
-        ) as RealtimeEvents.Event.ApiError
-        assertEquals("boom", plain.message)
-        assertFalse(plain.commitEmpty)
-
-        val empty = RealtimeEvents.parse(
-            """{"type":"error","error":{"code":"input_audio_buffer_commit_empty","message":"nothing to commit"}}""",
-        ) as RealtimeEvents.Event.ApiError
-        assertTrue(empty.commitEmpty)
-    }
-
-    @Test
-    fun `ignores everything else`() {
-        assertEquals(RealtimeEvents.Event.Ignored, RealtimeEvents.parse("""{"type":"session.created"}"""))
-        assertEquals(RealtimeEvents.Event.Ignored, RealtimeEvents.parse("""{"type":"rate_limits.updated"}"""))
+        assertEquals(RealtimeEvents.Event.Ignored, RealtimeEvents.parse("""{"usageMetadata":{"totalTokenCount":42}}"""))
+        assertEquals(RealtimeEvents.Event.Ignored, RealtimeEvents.parse("""{"goAway":{"timeLeft":"30s"}}"""))
+        assertEquals(RealtimeEvents.Event.Ignored, RealtimeEvents.parse("""{"sessionResumptionUpdate":{"newHandle":"h","resumable":true}}"""))
         assertEquals(RealtimeEvents.Event.Ignored, RealtimeEvents.parse("not json"))
         assertEquals(RealtimeEvents.Event.Ignored, RealtimeEvents.parse("[1,2,3]"))
-        // An event type we handle but missing its field is ignored, not crashed.
-        assertEquals(RealtimeEvents.Event.Ignored, RealtimeEvents.parse("""{"type":"input_audio_buffer.committed"}"""))
+        // A kind we handle but missing its fields is ignored, not crashed.
+        assertEquals(RealtimeEvents.Event.Ignored, RealtimeEvents.parse("""{"toolCall":{"functionCalls":[]}}"""))
+        assertEquals(RealtimeEvents.Event.Ignored, RealtimeEvents.parse("""{"serverContent":{"generationComplete":true}}"""))
     }
 }

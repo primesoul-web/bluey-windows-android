@@ -62,6 +62,9 @@ data class Packet(
     val text: String? = null,
     /** Base64 JPEG that goes with a tool result. */
     val image: String? = null,
+    /** Port addition: on a realtimeToken reply, the Live model the secret was minted
+     * for, so the phone can address its setup message. Older peers ignore it. */
+    val model: String? = null,
 )
 
 /**

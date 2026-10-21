@@ -5,11 +5,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * A live session with OpenAI's Realtime API, running on the phone. Once he's awake the
+ * A live session with the Gemini Live API, running on the phone. Once he's awake the
  * mic is on the whole time, so everything you say becomes context, but he stays quiet
- * until you hold the screen and ask. He never talks out loud: replies are text (speech
- * bubbles on the PC) with a little cartoon chirp here. Tools (look at the screen, point)
- * run on the PC. Full port of <c>iOS/Sources/LiveVoice.swift</c>.
+ * until you hold the screen and ask — manual activity detection means the server only
+ * answers when the phone signals the end of a held question. He never talks out loud:
+ * the model's output transcription becomes his text bubble, with a little cartoon chirp
+ * here. Tools (look at the screen, point) run on the PC. Full port of
+ * <c>iOS/Sources/LiveVoice.swift</c> on the Gemini Live API (D11).
  */
 class LiveVoice(
     private val scope: CoroutineScope,
@@ -41,8 +43,9 @@ class LiveVoice(
     var state: State = State.Asleep
         private set
 
-    /** Asks the PC for a short-lived key. Calls back with null on failure. */
-    var requestToken: ((callback: (String?) -> Unit) -> Unit)? = null
+    /** Asks the PC for a short-lived token, and the model it was minted for.
+     * Calls back with a null token on failure. */
+    var requestToken: ((callback: (token: String?, model: String?) -> Unit) -> Unit)? = null
 
     /** Runs a tool on the PC: (name, JSON arguments) → (output text, optional JPEG base64). */
     var runTool: ((name: String, arguments: String, done: (output: String, image: String?) -> Unit) -> Unit)? = null
@@ -62,8 +65,9 @@ class LiveVoice(
     /** Recent transcript, handed to a fresh connection so he keeps context in long sessions. */
     var resumeContext: (() -> String?)? = null
 
-    /** True from wake until you end the session. Dropped connections (sessions time out after an hour)
-     * reconnect on their own while this is set, and the recording carries on. */
+    /** True from wake until you end the session. Dropped connections (the Live API resets
+     * them every few minutes) reconnect on their own while this is set, and the recording
+     * carries on. */
     private var wantAwake = false
     private var reconnecting = false
 
@@ -84,15 +88,23 @@ class LiveVoice(
     private var askWhenReady = false
     private var chirpedThisResponse = false
 
-    /** Turns that were questions (said while holding, or committed when you let go). */
+    /** The locked session is live: nothing but the setup goes on the wire before this. */
+    private var sessionReady = false
+    private val pendingSends = mutableListOf<String>()
+
+    /** Turns that were questions (said while holding, or asked when you let go). The Live
+     * API has no item ids, so turns are numbered here and sealed at each exchange's end. */
     private val askedItems = mutableSetOf<String>()
+    private var userTurnSerial = 0
+    private var heardText = ""
+    private var turnAnnounced = false
     private var awaitingQuestion = false
     private var toolsRunning = 0
 
     init {
         mic.onChunk = { samples, count -> recorder.append(samples, count) }
         mic.onAudioBase64 { base64 ->
-            scope.launch { send(RealtimeEvents.appendAudio(base64)) }
+            scope.launch { send(RealtimeEvents.audioChunk(base64)) }
         }
     }
 
@@ -123,13 +135,13 @@ class LiveVoice(
                 setState(State.Asleep)
                 return@requestMicPermission
             }
-            request { token ->
+            request { token, model ->
                 if (state != State.Waking) return@request
                 if (token == null) {
                     wantAwake = false
                     setState(State.Asleep)
                 } else {
-                    connect(token)
+                    connect(token, model)
                 }
             }
         }
@@ -145,6 +157,8 @@ class LiveVoice(
         awaitingQuestion = false
         transport?.close()
         transport = null
+        sessionReady = false
+        pendingSends.clear()
         stopAudio()
         transcript = ""
         responseActive = false
@@ -152,6 +166,8 @@ class LiveVoice(
         holding = false
         askWhenReady = false
         toolsRunning = 0
+        heardText = ""
+        turnAnnounced = false
         chirps.stopAll()
         setState(State.Asleep)
     }
@@ -162,7 +178,10 @@ class LiveVoice(
             wake()
             return
         }
-        send(RealtimeEvents.createResponse("Reply with a quick, cheerful hi in under eight words."))
+        responseActive = true
+        transcript = ""
+        chirpedThisResponse = false
+        send(RealtimeEvents.sayHi("Reply with a quick, cheerful hi in under eight words."))
     }
 
     // MARK: Hold to ask
@@ -176,6 +195,7 @@ class LiveVoice(
             return
         }
         if (transport == null) return
+        if (sessionReady) send(RealtimeEvents.activityStart)
         if (state == State.Listening || state == State.Speaking) setState(State.Asking)
     }
 
@@ -194,54 +214,69 @@ class LiveVoice(
         askWhenReady = false
         setState(State.Thinking)
         awaitingQuestion = true
+        // A response is now expected — the Live API has no response.created to mark it.
+        responseActive = true
+        transcript = ""
+        chirpedThisResponse = false
         // Close off what you just said (it may still be mid-sentence) and ask for a reply.
-        send(RealtimeEvents.commitAudio)
-        send(RealtimeEvents.createResponse())
+        send(RealtimeEvents.activityEnd)
     }
 
     // MARK: Connection
 
-    private fun connect(token: String) {
+    private fun connect(token: String, model: String?) {
         val fresh = makeTransport()
         transport = fresh
+        sessionReady = false
+        pendingSends.clear()
         fresh.connect(
             token,
             onEvent = { text -> scope.launch { handle(text) } },
             onClosed = { scope.launch { if (transport === fresh) onTransportClosed() } },
         )
+        // The setup names the model; everything else about the session is locked in the
+        // token the PC minted. OkHttp queues it until the socket opens, so it stays first.
+        fresh.send(RealtimeEvents.setup(model))
+    }
+
+    /** The locked session is live: flush anything queued, then carry the old connect()
+     * behavior — first connections start the mic and chirp, reconnects replay context. */
+    private fun onSessionReady() {
+        sessionReady = true
+        flushPending()
         if (reconnecting) {
             // Same session, new connection: the mic and recording never stopped. Remind him what was said.
             reconnecting = false
             val context = resumeContext?.invoke()
             if (!context.isNullOrEmpty()) send(RealtimeEvents.contextReplay(context))
-            if (askWhenReady) ask() else setState(if (holding) State.Asking else State.Listening)
-            return
+        } else {
+            try {
+                startAudio()
+            } catch (e: Exception) {
+                onCaption?.invoke("I couldn't start the microphone: ${e.message}", true)
+                sleep()
+                return
+            }
+            onSessionStart?.invoke()
+            chirp(syllables = 2)
         }
-        try {
-            startAudio()
-        } catch (e: Exception) {
-            onCaption?.invoke("I couldn't start the microphone: ${e.message}", true)
-            sleep()
-            return
-        }
-        onSessionStart?.invoke()
-        chirp(syllables = 2)
         if (askWhenReady) ask() else setState(if (holding) State.Asking else State.Listening)
     }
 
-    /** The connection dropped mid-session: get a new key and carry on, keeping the mic and recording running. */
+    /** The connection dropped mid-session: get a new token and carry on, keeping the mic and recording running. */
     private fun reconnect(attempt: Int = 0) {
         transport = null
+        sessionReady = false
         responseActive = false
         toolsRunning = 0
         if (!wantAwake) return
         val request = requestToken ?: return
         reconnecting = true
-        request { token ->
+        request { token, model ->
             scope.launch {
                 if (!wantAwake || transport != null) return@launch
                 if (token != null) {
-                    connect(token)
+                    connect(token, model)
                 } else {
                     // The PC may be briefly away; keep trying (the recording continues meanwhile).
                     val backoff = (2_000L + attempt * 3_000L).coerceAtMost(30_000L)
@@ -254,70 +289,104 @@ class LiveVoice(
 
     private fun onTransportClosed() {
         transport = null
+        sessionReady = false
         responseActive = false
         toolsRunning = 0
         if (wantAwake) reconnect() else sleep()
     }
 
     private fun send(json: String) {
+        if (!sessionReady) {
+            pendingSends.add(json) // nothing but the setup goes before setupComplete
+            return
+        }
         transport?.send(json)
+    }
+
+    private fun flushPending() {
+        if (pendingSends.isEmpty()) return
+        val queued = pendingSends.toList()
+        pendingSends.clear()
+        queued.forEach { transport?.send(it) }
     }
 
     // MARK: Events
 
     private fun handle(text: String) {
         when (val event = RealtimeEvents.parse(text)) {
-            RealtimeEvents.Event.ResponseCreated -> {
-                responseActive = true
-                transcript = ""
-                chirpedThisResponse = false
-            }
+            RealtimeEvents.Event.SetupComplete -> onSessionReady()
 
             is RealtimeEvents.Event.TextDelta -> {
-                transcript += event.delta
+                // Output transcriptions may arrive as deltas or as running text.
+                transcript = if (event.delta.length >= transcript.length &&
+                    event.delta.startsWith(transcript)
+                ) event.delta else transcript + event.delta
                 if (!chirpedThisResponse && transcript.isNotBlank()) {
                     chirpedThisResponse = true
+                    // A reply is streaming in — whether it follows an ask, a say-hi or a
+                    // tool result — so he's busy until its turn completes.
+                    responseActive = true
                     setState(State.Speaking)
                     chirp(syllables = transcript.split(" ").size.coerceIn(3, 5))
                 }
                 onCaption?.invoke(transcript, false)
             }
 
-            is RealtimeEvents.Event.BufferCommitted -> {
+            is RealtimeEvents.Event.UserTranscript -> {
+                if (!turnAnnounced) {
+                    turnAnnounced = true
+                    onUserTurn?.invoke(currentTurnId(), holding || awaitingQuestion)
+                }
+                heardText = if (event.text.length >= heardText.length && event.text.startsWith(heardText)) {
+                    event.text
+                } else {
+                    heardText + event.text
+                }
                 val asked = holding || awaitingQuestion
-                if (asked) askedItems.add(event.itemId)
-                if (awaitingQuestion && !holding) awaitingQuestion = false
-                onUserTurn?.invoke(event.itemId, asked)
+                if (asked) askedItems.add(currentTurnId())
+                onUserWords?.invoke(currentTurnId(), heardText, asked)
             }
 
-            is RealtimeEvents.Event.UserTranscript ->
-                onUserWords?.invoke(event.itemId, event.transcript, askedItems.contains(event.itemId))
-
-            is RealtimeEvents.Event.ResponseDone -> {
+            RealtimeEvents.Event.TurnComplete -> {
                 responseActive = false
                 if (transcript.isNotEmpty()) {
                     onCaption?.invoke(transcript, true)
                     onReply?.invoke(transcript)
                 }
-                if (event.calls.isNotEmpty()) {
-                    if (state != State.Speaking) setState(State.Thinking)
-                    runTools(event.calls)
-                }
+                awaitingQuestion = false
+                sealUserTurn()
                 finishIfQuiet()
             }
 
-            is RealtimeEvents.Event.ApiError -> {
-                if (event.commitEmpty) awaitingQuestion = false
-                // The original logs and moves on; so do we.
+            RealtimeEvents.Event.Interrupted -> {
+                // You started a new ask mid-reply; the bubble was already cleared.
+                responseActive = false
+                finishIfQuiet()
+            }
+
+            is RealtimeEvents.Event.ToolCalls -> {
+                responseActive = false
+                if (state != State.Speaking) setState(State.Thinking)
+                runTools(event.calls)
             }
 
             RealtimeEvents.Event.Ignored -> {}
         }
     }
 
+    private fun currentTurnId() = "u$userTurnSerial"
+
+    /** One exchange is over: what you said next starts a fresh turn in the transcript. */
+    private fun sealUserTurn() {
+        turnAnnounced = false
+        userTurnSerial++
+        heardText = ""
+    }
+
     private fun runTools(calls: List<RealtimeEvents.FunctionCall>) {
         var remaining = calls.size
         toolsRunning += 1
+        val results = mutableListOf<RealtimeEvents.ToolResult>()
         val images = mutableListOf<String>()
         for (call in calls) {
             if (call.name == "go_to_sleep") sleepAfterReply = true
@@ -332,14 +401,17 @@ class LiveVoice(
                         val at = output.indexOf(marker)
                         if (at >= 0) onReport?.invoke(output.substring(at + marker.length))
                     }
-                    send(RealtimeEvents.functionCallOutput(call.callId, output))
+                    results.add(RealtimeEvents.ToolResult(call.callId, call.name, output))
                     image?.let { images.add(it) }
                     remaining -= 1
                     if (remaining == 0) {
                         toolsRunning = maxOf(0, toolsRunning - 1)
-                        // Screenshots go in as a user image so he can actually see the screen.
-                        for (image in images) send(RealtimeEvents.inputImage(image))
-                        send(RealtimeEvents.createResponse())
+                        // The outputs go back first; blocking tools resume the model on
+                        // them. Screenshots follow as a user turn that completes it, so
+                        // he can actually see the screen for the reply — the original's
+                        // input_image + response.create order.
+                        send(RealtimeEvents.toolResponse(results))
+                        for (image in images) send(RealtimeEvents.imageTurn(image))
                     }
                 }
             }

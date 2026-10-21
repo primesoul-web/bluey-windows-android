@@ -129,7 +129,9 @@ class MainActivity : ComponentActivity() {
         animator.localTalk = { live.level }
 
         live.requestToken = { done ->
-            link.request(Packet(command = "realtimeToken")) { reply -> done(reply?.text) }
+            link.request(Packet(command = "realtimeToken")) { reply ->
+                done(reply?.text, reply?.model)
+            }
         }
         live.runTool = { name, arguments, done ->
             link.request(Packet(command = "tool", tool = name, text = arguments)) { reply ->

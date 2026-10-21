@@ -14,11 +14,12 @@ import java.nio.ByteOrder
 import java.util.Base64
 
 /**
- * The mic: one 24 kHz PCM16 mono [AudioRecord] (voice-communication source, so echo
- * cancellation is on) feeding both the Realtime stream (`input_audio_buffer.append`,
- * base64) and the recorder. Port of <c>LiveVoice.startAudio/sendMic</c> — the original
- * installs a 2400-frame tap and converts; we record at 24 kHz natively and read the
- * same 2400 frames per chunk.
+ * The mic: one 16 kHz PCM16 mono [AudioRecord] (voice-communication source, so echo
+ * cancellation is on) feeding both the Live stream (`realtimeInput.audio`, base64 —
+ * the Live API's native input rate) and the recorder. Port of
+ * <c>LiveVoice.startAudio/sendMic</c> — the original installs a 2400-frame tap on its
+ * 24 kHz stream; we record at 16 kHz natively and read the same 2400 frames
+ * (150 ms) per chunk.
  */
 class MicStreamer(private val scope: CoroutineScope) : MicSource {
 
@@ -33,7 +34,7 @@ class MicStreamer(private val scope: CoroutineScope) : MicSource {
     @SuppressLint("MissingPermission") // LiveVoice asks for RECORD_AUDIO before starting
     override fun start() {
         if (job?.isActive == true) return
-        val sampleRate = 24_000
+        val sampleRate = 16_000
         val minBuffer = AudioRecord.getMinBufferSize(
             sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audioRecord = AudioRecord(

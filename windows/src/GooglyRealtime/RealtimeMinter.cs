@@ -5,46 +5,52 @@ using System.Text.Json.Nodes;
 namespace GooglyRealtime;
 
 /// <summary>
-/// Mints short-lived Realtime client secrets for the phone, so the real OpenAI key never
-/// leaves the PC. Port of <c>RealtimeHost.mintToken()</c>: POST
-/// /v1/realtime/client_secrets with a 600-second expiry and the full session config.
+/// Mints short-lived ephemeral Live tokens for the phone, so the real Gemini API key
+/// (from Google AI Studio) never leaves the PC. Port of <c>RealtimeHost.mintToken()</c>:
+/// POST /v1beta/auth_tokens with a 600-second new-session window (the original's
+/// 600 s secret TTL) and the full session config locked into the token.
 /// </summary>
 public sealed class RealtimeMinter
 {
-    public const string Endpoint = "https://api.openai.com/v1/realtime/client_secrets";
+    public const string Endpoint = "https://generativelanguage.googleapis.com/v1beta/auth_tokens";
 
     private readonly HttpClient _client;
+    private readonly Func<DateTime> _clock;
 
-    public RealtimeMinter(HttpMessageHandler? handler = null)
+    public RealtimeMinter(HttpMessageHandler? handler = null, Func<DateTime>? clock = null)
     {
         _client = handler is null ? new HttpClient() : new HttpClient(handler);
+        _clock = clock ?? (() => DateTime.UtcNow);
     }
 
     /// <summary>Why a mint failed, with the exact user-facing wording (shown as a caption).</summary>
     public static class TokenError
     {
         public const string NoKey =
-            "I need an OpenAI API key. Add one under OpenAI Key in the tray menu.";
+            "I need a Gemini API key. Add one under Gemini API Key in the tray menu.";
 
         public static string Failed(string why) =>
-            "OpenAI wouldn't start a voice session: " + Truncate(why, 160);
+            "Gemini wouldn't start a voice session: " + Truncate(why, 160);
 
         private static string Truncate(string s, int max) =>
             s.Length <= max ? s : s[..max];
     }
 
     /// <summary>
-    /// Mints a client secret. Throws <see cref="RealtimeMintException"/> with the exact
-    /// caption-worthy message from <see cref="TokenError"/> on failure.
+    /// Mints an ephemeral token. Throws <see cref="RealtimeMintException"/> with the exact
+    /// caption-worthy message from <see cref="TokenError"/> on failure. Returns the token
+    /// itself (the response's <c>name</c>) plus the model it was minted for.
     /// </summary>
-    public async Task<string> MintAsync(
-        string? apiKey, string? savedPersonality, bool computerControl, CancellationToken ct = default)
+    public async Task<(string Token, string Model)> MintAsync(
+        string? apiKey, string? savedPersonality, bool computerControl,
+        string? model = null, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(apiKey)) throw new RealtimeMintException(TokenError.NoKey);
 
-        var body = RealtimeSpec.MintRequestBody(savedPersonality, computerControl);
+        var modelName = RealtimeSpec.ModelName(model);
+        var body = RealtimeSpec.MintRequestBody(savedPersonality, computerControl, modelName, _clock());
         using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint);
-        request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + apiKey);
+        request.Headers.TryAddWithoutValidation("x-goog-api-key", apiKey);
         request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
 
         HttpResponseMessage response;
@@ -60,17 +66,21 @@ public sealed class RealtimeMinter
         using (response)
         {
             var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            string? value = null;
+            try
             {
-                throw new RealtimeMintException(TokenError.Failed($"{(int)response.StatusCode} {text}"));
+                value = JsonNode.Parse(text)?["name"]?.GetValue<string>();
             }
-            var json = JsonNode.Parse(text);
-            var value = json?["value"]?.GetValue<string>();
-            if (string.IsNullOrEmpty(value))
+            catch (InvalidOperationException)
             {
-                throw new RealtimeMintException(TokenError.Failed($"{(int)response.StatusCode} {text}"));
+                // not a string / wrong shape → treated as a missing token below
             }
-            return value!;
+            if (!response.IsSuccessStatusCode || string.IsNullOrEmpty(value))
+            {
+                throw new RealtimeMintException(TokenError.Failed(
+                    $"{(int)response.StatusCode} {text}"));
+            }
+            return (value!, modelName);
         }
     }
 }

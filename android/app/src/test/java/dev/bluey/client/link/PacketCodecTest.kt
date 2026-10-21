@@ -74,6 +74,24 @@ class PacketCodecTest {
     }
 
     @Test
+    fun `model rides along on realtimeToken replies`() {
+        // Port addition (wire rule 5): the PC tells the phone which Live model to address.
+        val packet = PacketCodec.tryDecode(
+            """{"command":"realtimeToken","callID":"U1","text":"auth_tokens/xyz","model":"gemini-3.8-live"}""",
+        )
+        assertEquals("gemini-3.8-live", packet?.model)
+        assertEquals(
+            """{"command":"realtimeToken","callID":"U1","text":"auth_tokens/xyz","model":"gemini-3.8-live"}""",
+            encodeText(packet!!),
+        )
+
+        // Absent on failure replies and unknown to the original — simply unset.
+        val failure = PacketCodec.tryDecode("""{"command":"realtimeToken","callID":"U2"}""")
+        assertNull(failure?.model)
+        assertTrue(!encodeText(failure!!).contains("model"))
+    }
+
+    @Test
     fun `unknown fields are ignored`() {
         val packet = PacketCodec.tryDecode("""{"hello":"PC","futureField":42,"nested":{"a":[1,2,3]}}""")
         assertEquals("PC", packet?.hello)

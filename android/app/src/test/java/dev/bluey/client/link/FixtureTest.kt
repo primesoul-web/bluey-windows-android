@@ -34,7 +34,7 @@ class FixtureTest {
     )
 
     private val knownFields =
-        setOf("face", "hello", "volume", "command", "audio", "speech", "callID", "tool", "text", "image")
+        setOf("face", "hello", "volume", "command", "audio", "speech", "callID", "tool", "text", "image", "model")
     private val knownFaceFields = setOf("gazeX", "gazeY", "mood", "talk")
 
     @Test

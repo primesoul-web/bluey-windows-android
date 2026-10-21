@@ -20,7 +20,7 @@ public partial class App : Application
     private HotKeys _hotKeys = null!;
 
     private HostSettings _settings = null!;
-    private OpenAiKeyStore _keys = null!;
+    private ApiKeyStore _keys = null!;
     private RealtimeMinter _minter = null!;
     private CaptionWindow _captions = null!;
     private RealtimeHost _host = null!;
@@ -47,7 +47,7 @@ public partial class App : Application
         Log($"host name: {hostName}");
 
         _settings = new HostSettings();
-        _keys = new OpenAiKeyStore();
+        _keys = new ApiKeyStore();
         _minter = new RealtimeMinter();
         _captions = new CaptionWindow { PhonePosition = _settings.PhonePosition };
         _settings.Changed += () => Dispatcher.BeginInvoke(() =>
@@ -91,15 +91,15 @@ public partial class App : Application
         _faceDriver = new FaceDriver(_server);
         _faceDriver.Start();
 
-        // The original asks for an OpenAI key on first launch, half a second in.
-        if (_keys.Get("openai") is null)
+        // The original asks for an API key on first launch, half a second in.
+        if (_keys.Get("gemini") is null)
         {
             var prompt = new System.Windows.Threading.DispatcherTimer
                 { Interval = TimeSpan.FromSeconds(0.5) };
             prompt.Tick += (_, _) =>
             {
                 prompt.Stop();
-                if (_keys.Get("openai") is null) EditKeys();
+                if (_keys.Get("gemini") is null) EditKeys();
             };
             prompt.Start();
         }

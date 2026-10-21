@@ -10,21 +10,22 @@ namespace GooglyRealtime;
 /// or git. Port of <c>Keychain.swift</c> (which despite its name is a plain
 /// ~/Library/Application Support/Googly/keys.json on the Mac); the Windows port stores
 /// each value DPAPI-encrypted for the current user, per the locked porting decision.
+/// Service names: "gemini" for the AI Studio key that mints Live sessions.
 /// </summary>
-public sealed class OpenAiKeyStore
+public sealed class ApiKeyStore
 {
     private readonly object _gate = new();
     private readonly string _path;
     private JsonObject? _cache;
 
-    public OpenAiKeyStore(string? path = null)
+    public ApiKeyStore(string? path = null)
     {
         _path = path ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "Googly", "keys.json");
     }
 
-    public static OpenAiKeyStore CreateForTest(string path) => new(path);
+    public static ApiKeyStore CreateForTest(string path) => new(path);
 
     /// <summary>The stored key for a service, or null when there isn't one.</summary>
     public string? Get(string service)

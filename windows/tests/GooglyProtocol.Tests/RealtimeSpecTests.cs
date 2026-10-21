@@ -5,12 +5,15 @@ using Xunit;
 namespace GooglyProtocol.Tests;
 
 /// <summary>
-/// The minted session JSON is a wire contract with OpenAI AND with the original app:
-/// shape, model, modalities, VAD knobs, tool list and prompt text must match
-/// RealtimeHost.swift exactly (D7/D10 adaptations aside).
+/// The minted token's locked session config is a wire contract with the Gemini Live API
+/// AND a behavior contract with the original app: model, modalities, manual VAD,
+/// transcriptions, tool list and prompt text must match RealtimeHost.swift's intent
+/// (D7/D10 adaptations, D11 provider switch aside).
 /// </summary>
 public class RealtimeSpecTests
 {
+    private static readonly DateTime FixedNow = new(2026, 10, 21, 12, 0, 0, DateTimeKind.Utc);
+
     [Fact]
     public void Instructions_ArePersonalityPlusToolGuidePlusComputerGuide()
     {
@@ -37,6 +40,14 @@ public class RealtimeSpecTests
     }
 
     [Fact]
+    public void ModelName_FallsBackToTheDefaultLiveModel()
+    {
+        Assert.Equal("gemini-3.8-live", RealtimeSpec.ModelName(null));
+        Assert.Equal("gemini-3.8-live", RealtimeSpec.ModelName("  "));
+        Assert.Equal("gemini-3.1-flash-live-preview", RealtimeSpec.ModelName("gemini-3.1-flash-live-preview"));
+    }
+
+    [Fact]
     public void DefaultPersonality_IsTheOriginalWithPhoneForIPhone()
     {
         // Verbatim from RealtimeHost.swift except D10: "an iPhone" → "a phone".
@@ -57,38 +68,36 @@ public class RealtimeSpecTests
     }
 
     [Fact]
-    public void Session_HasTheExactShape()
+    public void LiveConfig_HasTheExactShape()
     {
-        var session = RealtimeSpec.Session(null, computerControl: true);
+        var config = RealtimeSpec.LiveConfig(null, computerControl: true);
 
-        Assert.Equal("realtime", (string?)session["type"]);
-        Assert.Equal("gpt-realtime-2.1", (string?)session["model"]);
-        Assert.Equal(RealtimeSpec.Instructions(null, true), (string?)session["instructions"]);
+        // He never talks out loud: the model answers in audio and the phone shows the
+        // output transcription as his bubble (native-audio models can't answer text-only).
+        var modalities = Assert.IsType<JsonArray>(config["responseModalities"]);
+        Assert.Equal(["AUDIO"], modalities.Select(m => (string?)m));
 
-        var modalities = Assert.IsType<JsonArray>(session["output_modalities"]);
-        Assert.Equal(["text"], modalities.Select(m => (string?)m));
+        var speech = Assert.IsType<JsonObject>(Assert.IsType<JsonObject>(config["speechConfig"])["voiceConfig"]);
+        Assert.Equal(RealtimeSpec.Voice,
+            (string?)Assert.IsType<JsonObject>(speech["prebuiltVoiceConfig"])["voiceName"]);
 
-        var audio = Assert.IsType<JsonObject>(session["audio"]);
-        var input = Assert.IsType<JsonObject>(audio["input"]);
-        var format = Assert.IsType<JsonObject>(input["format"]);
-        Assert.Equal("audio/pcm", (string?)format["type"]);
-        Assert.Equal(24000, (int?)format["rate"]);
+        // The system instruction is the original's instructions, verbatim.
+        var parts = Assert.IsType<JsonArray>(Assert.IsType<JsonObject>(config["systemInstruction"])["parts"]);
+        Assert.Equal(RealtimeSpec.Instructions(null, true), (string?)parts[0]?["text"]);
 
-        var vad = Assert.IsType<JsonObject>(input["turn_detection"]);
-        Assert.Equal("server_vad", (string?)vad["type"]);
-        Assert.Equal(0.5, (double?)vad["threshold"]);
-        Assert.Equal(300, (int?)vad["prefix_padding_ms"]);
-        Assert.Equal(500, (int?)vad["silence_duration_ms"]);
-        Assert.Equal(false, (bool?)vad["create_response"]);
-        Assert.Equal(false, (bool?)vad["interrupt_response"]);
+        // Manual activity detection: the server never answers on its own — the phone
+        // signals activity around a held question (the create_response:false stand-in).
+        var vad = Assert.IsType<JsonObject>(
+            Assert.IsType<JsonObject>(config["realtimeInputConfig"])["automaticActivityDetection"]);
+        Assert.Equal(true, (bool?)vad["disabled"]);
 
-        var noise = Assert.IsType<JsonObject>(input["noise_reduction"]);
-        Assert.Equal("near_field", (string?)noise["type"]);
+        // Both transcriptions feed the saved session transcript.
+        Assert.NotNull(config["inputAudioTranscription"]);
+        Assert.NotNull(config["outputAudioTranscription"]);
 
-        var transcription = Assert.IsType<JsonObject>(input["transcription"]);
-        Assert.Equal("gpt-4o-mini-transcribe", (string?)transcription["model"]);
-
-        Assert.Equal("auto", (string?)session["tool_choice"]);
+        // All-day sessions stay inside the context window.
+        var compression = Assert.IsType<JsonObject>(config["contextWindowCompression"]);
+        Assert.NotNull(compression["slidingWindow"]);
     }
 
     [Fact]
@@ -113,19 +122,24 @@ public class RealtimeSpecTests
         var byName = tools.ToDictionary(t => (string?)t["name"]);
 
         var look = byName["look_at_screen"];
-        Assert.Equal("function", (string?)look["type"]);
         Assert.StartsWith("Take a fresh look at the user's screen.", (string?)look["description"]);
-        Assert.Empty(Assert.IsType<JsonObject>(Assert.IsType<JsonObject>(look["parameters"])["properties"]));
-        Assert.Empty(Assert.IsType<JsonArray>(Assert.IsType<JsonObject>(look["parameters"])["required"]));
+        // Blocking keeps the original's tool-first flow: he waits for the PC's result.
+        Assert.Equal("BLOCKING", (string?)look["behavior"]);
+        var lookParams = Assert.IsType<JsonObject>(look["parameters"]);
+        Assert.Equal("OBJECT", (string?)lookParams["type"]);
+        Assert.Empty(Assert.IsType<JsonObject>(lookParams["properties"]));
+        Assert.Empty(Assert.IsType<JsonArray>(lookParams["required"]));
 
         var point = byName["point_at"];
         var props = Assert.IsType<JsonObject>(Assert.IsType<JsonObject>(point["parameters"])["properties"]);
         Assert.Equal("An id from look_at_screen, like W12, L3 or C4.", (string?)props["target_id"]?["description"]);
+        Assert.Equal("STRING", (string?)props["target_id"]?["type"]);
 
         var spot = byName["point_at_spot"];
         var spotProps = Assert.IsType<JsonObject>(Assert.IsType<JsonObject>(spot["parameters"])["properties"]);
         Assert.Equal("0 = left edge, 1000 = right edge of the screen", (string?)spotProps["x"]?["description"]);
         Assert.Equal("0 = top edge, 1000 = bottom edge of the screen", (string?)spotProps["y"]?["description"]);
+        Assert.Equal("NUMBER", (string?)spotProps["x"]?["type"]);
 
         // D10: Windows shortcut examples, no cmd.
         var keys = byName["press_keys"];
@@ -149,15 +163,21 @@ public class RealtimeSpecTests
     }
 
     [Fact]
-    public void MintRequestBody_WrapsTheSessionInATenMinuteExpiry()
+    public void MintRequestBody_LocksTheConfigIntoASingleUseTenMinuteToken()
     {
-        var body = RealtimeSpec.MintRequestBody(null, computerControl: false);
-        var expires = Assert.IsType<JsonObject>(body["expires_after"]);
-        Assert.Equal("created_at", (string?)expires["anchor"]);
-        Assert.Equal(600, (int?)expires["seconds"]);
+        var body = RealtimeSpec.MintRequestBody(null, computerControl: false, null, FixedNow);
 
-        var session = Assert.IsType<JsonObject>(body["session"]);
-        Assert.Equal("gpt-realtime-2.1", (string?)session["model"]);
+        Assert.Equal(1, (int?)body["uses"]);
+        // The original's 600 s secret TTL: ten minutes to start a session…
+        Assert.Equal("2026-10-21T12:10:00Z", (string?)body["newSessionExpireTime"]);
+        // …and the documented 30-minute default for messages on the connection.
+        Assert.Equal("2026-10-21T12:30:00Z", (string?)body["expireTime"]);
+
+        var constraints = Assert.IsType<JsonObject>(body["liveConnectConstraints"]);
+        Assert.Equal("models/gemini-3.8-live", (string?)constraints["model"]);
+        var config = Assert.IsType<JsonObject>(constraints["config"]);
+        Assert.Equal(RealtimeSpec.Instructions(null, false),
+            (string?)((JsonArray?)config["systemInstruction"]?["parts"])?[0]?["text"]);
     }
 
     [Fact]

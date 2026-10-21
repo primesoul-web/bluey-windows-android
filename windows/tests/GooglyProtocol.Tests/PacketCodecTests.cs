@@ -85,6 +85,25 @@ public class PacketCodecTests
     }
 
     [Fact]
+    public void Model_rides_along_on_realtimeToken_replies()
+    {
+        // Port addition (wire rule 5): the PC tells the phone which Live model to address.
+        var packet = PacketCodec.TryDecode(
+            "{\"command\":\"realtimeToken\",\"callID\":\"U1\",\"text\":\"auth_tokens/xyz\",\"model\":\"gemini-3.8-live\"}");
+        Assert.NotNull(packet);
+        Assert.Equal("gemini-3.8-live", packet!.Model);
+        JsonSemantics.AssertEqual(
+            "{\"command\":\"realtimeToken\",\"callID\":\"U1\",\"text\":\"auth_tokens/xyz\",\"model\":\"gemini-3.8-live\"}",
+            EncodeText(packet));
+
+        // Absent on failure replies and unknown to the original — simply unset.
+        var failure = PacketCodec.TryDecode("{\"command\":\"realtimeToken\",\"callID\":\"U2\"}");
+        Assert.NotNull(failure);
+        Assert.Null(failure!.Model);
+        Assert.DoesNotContain("model", EncodeText(failure));
+    }
+
+    [Fact]
     public void Unknown_fields_are_ignored()
     {
         var packet = PacketCodec.TryDecode("{\"hello\":\"PC\",\"futureField\":42,\"nested\":{\"a\":[1,2,3]}}");
@@ -132,13 +151,14 @@ public class PacketCodecTests
             Tool = "click",
             Text = "hi",
             Image = "aGk=",
+            Model = "gemini-3.8-live",
         };
         var encoded = EncodeText(packet);
         var keys = new List<string>();
         using (var doc = System.Text.Json.JsonDocument.Parse(encoded))
             keys.AddRange(doc.RootElement.EnumerateObject().Select(p => p.Name));
         Assert.Equal(
-            new[] { "face", "hello", "volume", "command", "audio", "speech", "callID", "tool", "text", "image" },
+            new[] { "face", "hello", "volume", "command", "audio", "speech", "callID", "tool", "text", "image", "model" },
             keys);
     }
 

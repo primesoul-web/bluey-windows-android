@@ -32,6 +32,7 @@ Every line is a `Packet`. All fields are optional; a packet usually carries just
 | `tool` | string | On a `tool` request: the tool name (e.g. `look_at_screen`) |
 | `text` | string | Free text: tool arguments or output, a minted client secret, a caption, or JSON metadata |
 | `image` | base64 string | JPEG that accompanies a `toolResult` (the screenshot from `look_at_screen`) |
+| `model` | string | **Port addition** (D11, unknown to the original, ignored by older peers): on a `realtimeToken` reply, the Live model the secret was minted for (e.g. `gemini-3.8-live`) |
 
 ## FaceState
 
@@ -50,7 +51,7 @@ Every line is a `Packet`. All fields are optional; a packet usually carries just
 | `face` | PC → phone | `face` | — | Throttled (rules below); ≥ 1/s so the phone knows the PC is driving |
 | `wake` / `sleep` | PC → phone (broadcast) | — | — | Wake/sleep hotkey, menu item, or auto-sleep when the phone disconnects while awake |
 | `awake` / `asleep` | phone → PC | — | — | Session state sync |
-| `realtimeToken` | phone → PC | `callID` | same command + `callID` + `text` = minted client secret (absent on failure) | PC calls `POST /v1/realtime/client_secrets` (600 s TTL, full session config) with its real key |
+| `realtimeToken` | phone → PC | `callID` | same command + `callID` + `text` = minted ephemeral token (absent on failure) + `model` (port addition) | The original calls `POST /v1/realtime/client_secrets` (600 s TTL, full session config baked in) with its real OpenAI key. **The port (D11) instead calls `POST /v1beta/auth_tokens`** with its real Gemini (AI Studio) key — single-use token, 600 s new-session window, 30 min message window, whole session config locked inside `liveConnectConstraints` — and tells the phone the model in `model` |
 | `tool` | phone → PC | `callID`, `tool`, `text` = JSON arguments | `toolResult` + `callID` + `text` (+ `image`) | Tools execute strictly in arrival order |
 | `toolResult` | PC → phone | `callID`, `text`, `image`? | — | |
 | `transcribe` | phone → PC | `callID`, `audio` = AAC chunk, `text` = JSON `{session, index, started, sessionStarted}` | `transcribed` + `callID` + `text` = JSON `{segments: [{speaker, start, text}], notesPath}` | |
@@ -75,7 +76,7 @@ Every line is a `Packet`. All fields are optional; a packet usually carries just
 {"hello":"Pixel 9"}
 {"face":{"gazeX":0.42,"gazeY":-0.31,"mood":"pointing","talk":0}}
 {"command":"realtimeToken","callID":"9F13C2E4-…"}
-{"command":"realtimeToken","callID":"9F13C2E4-…","text":"<client secret>"}
+{"command":"realtimeToken","callID":"9F13C2E4-…","text":"<ephemeral token>","model":"gemini-3.8-live"}
 {"command":"tool","callID":"C2D4…","tool":"look_at_screen","text":"{}"}
 {"command":"toolResult","callID":"C2D4…","text":"Frontmost app: Chrome\n…","image":"<base64 jpeg>"}
 {"command":"caption","text":"That's the prompt box"}

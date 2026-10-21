@@ -14,12 +14,21 @@ Android client**. Repo: `primesoul-web/bluey-windows-android` (public, Unlicense
 - **Android client**: Kotlin + Compose (`android/`), minSdk 29.
 - **Wire protocol**: newline-delimited JSON `Packet`s over TCP, `_googly._tcp` mDNS,
   byte-compatible with the original (see `shared-protocol/`).
-- **Realtime**: the *phone* runs the OpenAI Realtime session
-  (`wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1`, text-only output, server
-  VAD with `create_response:false`) using a **PC-minted 600 s client secret**
-  (`POST /v1/realtime/client_secrets`, full session config baked in). The real OpenAI
-  key never leaves the PC (DPAPI-encrypted under `%APPDATA%\Googly`). The PC executes
-  tool calls relayed by the phone and returns text (+ optional JPEG) results.
+- **Realtime (D11 — switched 2026-10-21)**: the *phone* runs the **Gemini Live API**
+  session (`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained?access_token=<token>`,
+  16 kHz PCM in, AUDIO out shown via output transcription — his voice is the chirp,
+  replies are text bubbles) using a **PC-minted single-use ephemeral token**
+  (`POST /v1beta/auth_tokens` with `x-goog-api-key`, `newSessionExpireTime` +600 s,
+  `expireTime` +30 min, the whole session config locked inside via
+  `liveConnectConstraints`: personality, the 13 tools as blocking functionDeclarations,
+  manual activity detection, both transcriptions, sliding-window compression).
+  The real AI Studio key never leaves the PC (DPAPI-encrypted under
+  `%APPDATA%\Googly`, service `gemini`). The mint reply also carries the model in the
+  new optional `model` packet field. Manual activity detection is the Live API's
+  push-to-talk: the server never answers on its own — hold-to-ask sends
+  `activityStart`/`activityEnd` (the original's server-VAD `create_response:false` +
+  commit + `response.create`, mapped). The PC executes tool calls relayed by the phone
+  and returns text (+ optional JPEG) results.
 
 ## Locked decisions (from the user)
 
@@ -43,7 +52,7 @@ Android client**. Repo: `primesoul-web/bluey-windows-android` (public, Unlicense
 | M0 | Repo skeleton, PARITY.md, shared-protocol spec + fixtures, CI | ✅ done (`189c4e5`) |
 | CI | Windows EXE publish + Android APK build (+ protocol job) | ✅ done (`6672c3a`) |
 | M1 | Protocol + pairing (codec, mDNS, tray skeleton, PairingView, 96 tests) | ✅ done (`ad108a9`, CI green) |
-| M2 | Realtime voice + character (mint, WSS, hold-to-ask, chirp, FaceView, sessions) | ✅ done (`eebac91`, CI green — 90 Windows + 81 Android tests, EXE + APK artifacts) |
+| M2 | Realtime voice + character (mint, WSS, hold-to-ask, chirp, FaceView, sessions) | ✅ done (`eebac91` → retargeted to Gemini Live 2026-10-21, see below) |
 | M3 | Pointing + overlay + research cards | ⬜ next |
 | M4 | Computer control (click/type/scroll/drag/open, SendInput) | ⬜ |
 | M5 | Meeting notes (AAC chunks, diarized transcription, `Documents\Bluey Notes\`) | ⬜ |
@@ -59,45 +68,89 @@ Android client**. Repo: `primesoul-web/bluey-windows-android` (public, Unlicense
   onto the cursor overlay with the full speech-bubble choreography.
 - Android mic stops being captured when the app is backgrounded (no foreground service
   yet — planned for M6 polish; the session itself survives).
-- Live-Realtime E2E (actual OpenAI WSS traffic) is untestable without an API key —
-  the state machine is covered by 81 unit tests against a fake transport instead.
+- Live-API E2E (actual Gemini WSS traffic) is untestable without an API key — the state
+  machine is covered by 87 unit tests against a fake transport instead.
+
+## Gemini Live API — hardware-verification list (needs a real AI Studio key)
+
+The protocol shapes below are taken verbatim from Google's docs (ai.google.dev,
+2026-10-21); these semantics could not be exercised without a key and should be
+watched on first real use:
+
+1. **Minting** — `POST /v1beta/auth_tokens` with `liveConnectConstraints.config`
+   carrying `systemInstruction`/`tools`/`realtimeInputConfig`/transcriptions/
+   compression. If the endpoint rejects any locked field (400), trim it from
+   `RealtimeSpec.LiveConfig` and pass it via the phone's setup instead.
+2. **Constrained connect** — phone sends only `setup{model}`; the token's config
+   should win (`fieldMask` empty + `bidiGenerateContentSetup` present → connection
+   setup ignored). If the server complains about the minimal setup, mirror the full
+   config in it.
+3. **Background audio accumulation** — with manual VAD, mic audio streamed outside
+   activityStart/activityEnd is expected to accumulate as context (the original
+   overheard everything). If the server drops un-framed audio, asks still work; only
+   the overheard-context feature degrades.
+4. **Blocking tools auto-resume** — after `toolResponse`, BLOCKING function calling
+   should resume the model. If a reply never follows a tool result, add an explicit
+   `clientContent{turnComplete:true}` after the last tool response in
+   `LiveVoice.runTools` (one line).
+5. **Output transcription granularity** — both delta and running-text transcriptions
+   are merged defensively; verify captions don't duplicate on hardware.
+6. **Session resets** — the Live API resets connections every few minutes (`goAway`);
+   the reconnect path (new token + context replay) covers it — verify on a long
+   session.
 
 ## M2 detailed checklist (working copy — PARITY.md is the contract)
 
-- Windows `GooglyRealtime` lib: `RealtimeSpec` (exact minted session JSON incl. the 13
-  tools + personality/toolGuide/computerGuide with D7/D10 adaptations), `RealtimeMinter`
-  (`POST /v1/realtime/client_secrets`, `{expires_after:{anchor:"created_at",seconds:600}, session:{…}}`,
-  reads `value`), `HostSettings` (JSON at `%APPDATA%\Googly\settings.json`, keys/defaults
-  exactly like `Mac/Settings.swift`), `OpenAiKeyStore` (DPAPI, `%APPDATA%\Googly\keys.json`).
+- Windows `GooglyRealtime` lib: `RealtimeSpec` (the locked Live session config — the 13
+  tools as `functionDeclarations` with `behavior:"BLOCKING"` + proto-enum schema types,
+  personality/toolGuide/computerGuide with D7/D10 adaptations, manual activity detection,
+  both transcriptions, sliding-window compression, mint body `uses:1` + 600 s
+  new-session + 30 min message windows), `RealtimeMinter`
+  (`POST /v1beta/auth_tokens`, `x-goog-api-key`, reads `name`), `HostSettings` (JSON at
+  `%APPDATA%\Googly\settings.json`, keys/defaults exactly like `Mac/Settings.swift` +
+  `realtimeModel`), `ApiKeyStore` (DPAPI, `%APPDATA%\Googly\keys.json`, service
+  `gemini`).
 - Windows app: `RealtimeHost` handles `realtimeToken|awake|asleep|caption|captionDone|tool`
-  (serial tool chain); `transcribe`/`notes` are M5 (failure-shaped replies for now).
-  Caption bubble window (Fredoka, white→#EEF0FF, berry2 border, read-time
-  `clamp(2.8, 1.2 + 0.32·words, 12) + 3` s). Tray gains `Personality…` + `OpenAI Key…`
-  (auto-opens 0.5 s after launch when no key). Personality save → broadcast sleep then
+  (serial tool chain; the mint reply also carries `model`); `transcribe`/`notes` are M5
+  (failure-shaped replies for now). Caption bubble window (Fredoka, white→#EEF0FF,
+  berry2 border, read-time `clamp(2.8, 1.2 + 0.32·words, 12) + 3` s). Tray gains
+  `Personality…` + `Gemini API Key…` (auto-opens 0.5 s after launch when no key;
+  hint mentions aistudio.google.com/api-keys). Personality save → broadcast sleep then
   wake 1 s later (re-mint).
 - Android: `LiveVoice` (state machine asleep→waking→listening→asking→thinking→speaking;
-  OkHttp WSS; `input_audio_buffer.append` base64 PCM 24 k; hold-to-ask =
-  commit + `response.create`; reconnect backoff `min(30, 2+3·attempt)`; context replay
-  "(Context: what I said earlier in this session, from my notes. Don't reply to this.)\n" + ≤6000 chars);
-  tool relay → `function_call_output` + `input_image` + `response.create`; `go_to_sleep` =
-  sleep-after-reply), `ChirpSynth` (exact constants — see PARITY), `MicStreamer`
-  (AudioRecord VOICE_COMMUNICATION), `FaceView`+`FaceAnimator` verbatim port, `ModeIndicator`,
-  `SoundButton`, `SessionStore` + `BlueyAppView` (sessions/transcripts UI).
+  OkHttp WSS to `BidiGenerateContentConstrained?access_token=`; sends a minimal
+  `setup{model}` first and gates everything on `setupComplete`; mic 16 k PCM16 →
+  `realtimeInput.audio`; hold-to-ask = `activityStart` on press + `activityEnd` on
+  release; reconnect backoff `min(30, 2+3·attempt)`; context replay via `clientContent`
+  with `turnComplete:false` — "(Context: what I said earlier in this session, from my
+  notes. Don't reply to this.)\n" + ≤6000 chars; tool relay → `toolResponse` + screenshot
+  `inlineData` turns with `turnComplete:true`; `go_to_sleep` = sleep-after-reply),
+  `ChirpSynth` (exact constants — see PARITY), `MicStreamer` (AudioRecord
+  VOICE_COMMUNICATION, 16 kHz), `FaceView`+`FaceAnimator` verbatim port,
+  `ModeIndicator`, `SoundButton`, `SessionStore` + `BlueyAppView`
+  (sessions/transcripts UI).
 - M2 stand-ins (honest): `ChunkRecorder` is a no-op stub (real AAC chunking = M5);
   screen/control tools return "not in this build yet" results (M3/M4); caption bubble
   shows bottom-center above the phone position (M3 moves it to his cursor).
 
 ## Build & test (on the build machine)
 
-```bash
-# Windows (Linux cross-build; .NET 10 at ~/.dotnet)
-cd /home/z/my-project/bluey-windows-android/windows
-~/.dotnet/dotnet build GooglyWindows.sln -p:EnableWindowsTargeting=true
-~/.dotnet/dotnet test  GooglyWindows.sln -p:EnableWindowsTargeting=true
+Toolchains live in **`/home/z/my-project/toolchains/`** (persisted with the workspace;
+recreate from this section if lost): `dotnet/` (SDK 10.0.402), `gradle-8.9/`,
+`android-sdk/` (platform 35 + build-tools 34.0.0), `nuget/` + `gradle-home/` (caches).
+System Java 21 is used for Gradle.
 
-# Android (Gradle 8.9 + JDK 21 at ~/tools, SDK at ~/android-sdk)
+```bash
+# Windows (Linux cross-build)
+cd /home/z/my-project/bluey-windows-android/windows
+export NUGET_PACKAGES=/home/z/my-project/toolchains/nuget
+/home/z/my-project/toolchains/dotnet/dotnet build GooglyWindows.sln -p:EnableWindowsTargeting=true
+/home/z/my-project/toolchains/dotnet/dotnet test  GooglyWindows.sln -p:EnableWindowsTargeting=true
+
+# Android (Gradle 8.9; system JDK 21; SDK via android/local.properties)
 cd /home/z/my-project/bluey-windows-android/android
-~/tools/gradle/bin/gradle testDebugUnitTest assembleDebug
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 GRADLE_USER_HOME=/home/z/my-project/toolchains/gradle-home
+/home/z/my-project/toolchains/gradle-8.9/bin/gradle testDebugUnitTest assembleDebug
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same on every push to `main`; poll

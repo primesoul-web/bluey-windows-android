@@ -5,8 +5,8 @@ using Xunit;
 namespace GooglyProtocol.Tests;
 
 /// <summary>
-/// The minter talks to POST /v1/realtime/client_secrets with the PC's key and hands
-/// back the client secret's "value". These tests drive it against a fake transport.
+/// The minter talks to POST /v1beta/auth_tokens with the PC's AI Studio key and hands
+/// back the token's "name". These tests drive it against a fake transport.
 /// </summary>
 public class MinterTests
 {
@@ -15,7 +15,7 @@ public class MinterTests
         public HttpRequestMessage? LastRequest;
         public string? LastBody;
         public HttpStatusCode Status = HttpStatusCode.OK;
-        public string Response = """{"value":"secret123"}""";
+        public string Response = """{"name":"auth_tokens/abc123","expireTime":"2026-10-21T12:30:00Z"}""";
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken ct)
@@ -27,21 +27,27 @@ public class MinterTests
         }
     }
 
+    private static readonly DateTime FixedNow = new(2026, 10, 21, 12, 0, 0, DateTimeKind.Utc);
+
     [Fact]
-    public async Task Mints_WithKeyAuthorizationAndTheSessionBody()
+    public async Task Mints_WithKeyHeaderAndTheLockedSessionBody()
     {
         var handler = new FakeHandler();
-        var minter = new RealtimeMinter(handler);
+        var minter = new RealtimeMinter(handler, () => FixedNow);
 
-        var secret = await minter.MintAsync("sk-real-key", null, computerControl: false);
+        var (token, model) = await minter.MintAsync("AIza-real-key", null, computerControl: false);
 
-        Assert.Equal("secret123", secret);
+        Assert.Equal("auth_tokens/abc123", token);
+        Assert.Equal("gemini-3.8-live", model);
         Assert.Equal(HttpMethod.Post, handler.LastRequest!.Method);
         Assert.Equal(RealtimeMinter.Endpoint, handler.LastRequest.RequestUri!.ToString());
-        Assert.Equal("Bearer sk-real-key",
-            handler.LastRequest.Headers.GetValues("Authorization").Single());
-        Assert.Contains("\"seconds\":600", handler.LastBody);
-        Assert.Contains("gpt-realtime-2.1", handler.LastBody);
+        Assert.Equal("AIza-real-key",
+            handler.LastRequest.Headers.GetValues("x-goog-api-key").Single());
+        Assert.Contains("\"uses\":1", handler.LastBody);
+        Assert.Contains("\"newSessionExpireTime\":\"2026-10-21T12:10:00Z\"", handler.LastBody);
+        Assert.Contains("\"model\":\"models/gemini-3.8-live\"", handler.LastBody);
+        Assert.Contains("\"functionDeclarations\"", handler.LastBody);
+        Assert.Contains("\"automaticActivityDetection\":{\"disabled\":true}", handler.LastBody);
     }
 
     [Fact]
@@ -50,7 +56,7 @@ public class MinterTests
         var minter = new RealtimeMinter(new FakeHandler());
         var e = await Assert.ThrowsAsync<RealtimeMintException>(
             () => minter.MintAsync(null, null, computerControl: false));
-        Assert.Equal("I need an OpenAI API key. Add one under OpenAI Key in the tray menu.", e.Message);
+        Assert.Equal("I need a Gemini API key. Add one under Gemini API Key in the tray menu.", e.Message);
 
         var e2 = await Assert.ThrowsAsync<RealtimeMintException>(
             () => minter.MintAsync("", null, computerControl: false));
@@ -68,21 +74,34 @@ public class MinterTests
         var minter = new RealtimeMinter(handler);
 
         var e = await Assert.ThrowsAsync<RealtimeMintException>(
-            () => minter.MintAsync("sk-bad", null, computerControl: true));
+            () => minter.MintAsync("AIza-bad", null, computerControl: true));
 
-        Assert.StartsWith("OpenAI wouldn't start a voice session: 401 ", e.Message);
+        Assert.StartsWith("Gemini wouldn't start a voice session: 401 ", e.Message);
         // "401 " + body, capped at 160 characters of the "why".
         Assert.True(e.Message.Length <=
-            "OpenAI wouldn't start a voice session: ".Length + 160);
+            "Gemini wouldn't start a voice session: ".Length + 160);
     }
 
     [Fact]
-    public async Task SuccessWithoutAValue_Throws()
+    public async Task SuccessWithoutAName_Throws()
     {
-        var handler = new FakeHandler { Response = """{"id":"rt_1"}""" };
+        var handler = new FakeHandler { Response = """{"expireTime":"2026-10-21T12:30:00Z"}""" };
         var minter = new RealtimeMinter(handler);
         await Assert.ThrowsAsync<RealtimeMintException>(
-            () => minter.MintAsync("sk-real-key", null, computerControl: false));
+            () => minter.MintAsync("AIza-real-key", null, computerControl: false));
+    }
+
+    [Fact]
+    public async Task CustomModel_IsMintedAndReported()
+    {
+        var handler = new FakeHandler();
+        var minter = new RealtimeMinter(handler, () => FixedNow);
+
+        var (_, model) = await minter.MintAsync(
+            "AIza-real-key", null, computerControl: false, "gemini-3.1-flash-live-preview");
+
+        Assert.Equal("gemini-3.1-flash-live-preview", model);
+        Assert.Contains("\"model\":\"models/gemini-3.1-flash-live-preview\"", handler.LastBody);
     }
 }
 
@@ -109,6 +128,7 @@ public class HostSettingsTests : IDisposable
         Assert.Equal("comet", settings.Trail);
         Assert.Equal("listening", settings.Mood);
         Assert.Equal("", settings.Personality);
+        Assert.Equal("gemini-3.8-live", settings.RealtimeModel);
     }
 
     [Fact]
@@ -119,12 +139,14 @@ public class HostSettingsTests : IDisposable
             settings.ComputerControl = false;
             settings.CursorSize = 96;
             settings.Personality = "A friendly goose.";
+            settings.RealtimeModel = "gemini-3.1-flash-live-preview";
         }
         using (var reloaded = new HostSettings(_path))
         {
             Assert.False(reloaded.ComputerControl);
             Assert.Equal(96.0, reloaded.CursorSize);
             Assert.Equal("A friendly goose.", reloaded.Personality);
+            Assert.Equal("gemini-3.1-flash-live-preview", reloaded.RealtimeModel);
         }
     }
 
@@ -160,7 +182,7 @@ public class HostSettingsTests : IDisposable
     }
 }
 
-public class OpenAiKeyStoreTests : IDisposable
+public class ApiKeyStoreTests : IDisposable
 {
     private readonly string _path = Path.Combine(
         Path.GetTempPath(), $"googly-keys-{Guid.NewGuid():N}.json");
@@ -169,33 +191,33 @@ public class OpenAiKeyStoreTests : IDisposable
     public void RoundTrips_OnWindows()
     {
         if (!OperatingSystem.IsWindows()) return; // DPAPI is Windows-only
-        var store = new OpenAiKeyStore(_path);
-        Assert.Null(store.Get("openai"));
+        var store = new ApiKeyStore(_path);
+        Assert.Null(store.Get("gemini"));
 
-        store.Set("openai", "sk-test-key-123");
-        Assert.Equal("sk-test-key-123", store.Get("openai"));
+        store.Set("gemini", "AIza-test-key-123");
+        Assert.Equal("AIza-test-key-123", store.Get("gemini"));
 
         // The file on disk never contains the raw key.
         var raw = File.ReadAllText(_path);
-        Assert.DoesNotContain("sk-test-key-123", raw);
+        Assert.DoesNotContain("AIza-test-key-123", raw);
 
         // A fresh store reads it back (cache cleared by new instance).
-        var fresh = new OpenAiKeyStore(_path);
-        Assert.Equal("sk-test-key-123", fresh.Get("openai"));
+        var fresh = new ApiKeyStore(_path);
+        Assert.Equal("AIza-test-key-123", fresh.Get("gemini"));
 
         // Clearing removes it.
-        store.Set("openai", "");
-        Assert.Null(store.Get("openai"));
-        Assert.DoesNotContain("openai", File.ReadAllText(_path));
+        store.Set("gemini", "");
+        Assert.Null(store.Get("gemini"));
+        Assert.DoesNotContain("gemini", File.ReadAllText(_path));
     }
 
     [Fact]
     public void UnreadableValue_BehavesLikeMissing()
     {
         if (!OperatingSystem.IsWindows()) return;
-        File.WriteAllText(_path, """{"openai":"not-base64!!"}""");
-        var store = new OpenAiKeyStore(_path);
-        Assert.Null(store.Get("openai"));
+        File.WriteAllText(_path, """{"gemini":"not-base64!!"}""");
+        var store = new ApiKeyStore(_path);
+        Assert.Null(store.Get("gemini"));
     }
 
     public void Dispose()

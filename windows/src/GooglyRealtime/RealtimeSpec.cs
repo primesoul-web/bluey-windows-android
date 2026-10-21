@@ -3,15 +3,23 @@ using System.Text.Json.Nodes;
 namespace GooglyRealtime;
 
 /// <summary>
-/// Everything that goes into a minted Realtime session: the model, the instructions
-/// (personality + tool guide + computer guide), the audio input settings and the 13
+/// Everything that goes into a minted Live session: the model, the instructions
+/// (personality + tool guide + computer guide), the realtime-input behaviour and the 13
 /// tools. Port of the static half of <c>RealtimeHost.swift</c>; prompt strings are
 /// verbatim except the D10 platform adaptations (iPhone→phone, Mac→PC, cmd+t→ctrl+t,
-/// Windows app-name examples).
+/// Windows app-name examples). Provider switched from OpenAI Realtime to the Gemini
+/// Live API per the user's decision (PARITY.md D11); the session config is baked into
+/// the PC-minted ephemeral token, exactly like the original's client secret.
 /// </summary>
 public static class RealtimeSpec
 {
-    public const string Model = "gpt-realtime-2.1";
+    /// <summary>The default Live model (settings can override; the reply tells the phone).</summary>
+    public const string Model = "gemini-3.8-live";
+
+    /// <summary>The TTS voice he "speaks" with. His replies reach the user as text bubbles
+    /// (via output transcription — native-audio models can't answer text-only), so this
+    /// only shapes the generated audio we never play; Puck is the reference voice.</summary>
+    public const string Voice = "Puck";
 
     /// <summary>Separates his instructions from the report text (web_research results).</summary>
     public const string ReportMarker = "\n---REPORT---\n";
@@ -68,27 +76,17 @@ public static class RealtimeSpec
     public static string Instructions(string? savedPersonality, bool computerControl) =>
         Personality(savedPersonality) + "\n\n" + ToolGuide + (computerControl ? "\n\n" + ComputerGuide : "");
 
-    // MARK: Tools
-
-    private static JsonObject Tool(string name, string description,
-        JsonObject? properties = null, string[]? required = null)
+    /// <summary>The model actually minted for: the saved one, or the default when blank.</summary>
+    public static string ModelName(string? saved)
     {
-        return new JsonObject
-        {
-            ["type"] = "function",
-            ["name"] = name,
-            ["description"] = description,
-            ["parameters"] = new JsonObject
-            {
-                ["type"] = "object",
-                ["properties"] = properties ?? new JsonObject(),
-                ["required"] = new JsonArray((required ?? Array.Empty<string>())
-                    .Select(r => (JsonNode?)r!).ToArray()),
-            },
-        };
+        var trimmed = (saved ?? "").Trim();
+        return trimmed.Length == 0 ? Model : trimmed;
     }
 
-    /// <summary>A typed tool-argument property ({"type":…, "description":…}).</summary>
+    // MARK: Tools
+
+    /// <summary>A typed tool-argument property ({"type":…, "description":…}).
+    /// Types are the proto enum names (OBJECT/STRING/NUMBER/BOOLEAN) the Live API expects.</summary>
     private static JsonObject Prop(string type, string? description = null)
     {
         var property = new JsonObject { ["type"] = type };
@@ -96,13 +94,34 @@ public static class RealtimeSpec
         return property;
     }
 
-    private static JsonObject GridX() => Prop("number", "0 = left edge, 1000 = right edge of the screen");
-    private static JsonObject GridY() => Prop("number", "0 = top edge, 1000 = bottom edge of the screen");
-    private static JsonObject Target() => Prop("string", "An id from look_at_screen (C, L or W). Leave out to use x and y.");
+    private static JsonObject GridX() => Prop("NUMBER", "0 = left edge, 1000 = right edge of the screen");
+    private static JsonObject GridY() => Prop("NUMBER", "0 = top edge, 1000 = bottom edge of the screen");
+    private static JsonObject Target() => Prop("STRING", "An id from look_at_screen (C, L or W). Leave out to use x and y.");
+
+    /// <summary>A function declaration for the Live API. Blocking behavior keeps the
+    /// original's tool-first flow: the model waits for the PC's result, then replies.</summary>
+    private static JsonObject Tool(string name, string description,
+        JsonObject? properties = null, string[]? required = null)
+    {
+        return new JsonObject
+        {
+            ["name"] = name,
+            ["description"] = description,
+            ["behavior"] = "BLOCKING",
+            ["parameters"] = new JsonObject
+            {
+                ["type"] = "OBJECT",
+                ["properties"] = properties ?? new JsonObject(),
+                ["required"] = new JsonArray((required ?? Array.Empty<string>())
+                    .Select(r => (JsonNode?)r!).ToArray()),
+            },
+        };
+    }
 
     /// <summary>
-    /// Tool definitions for the session. The control set is only appended while
+    /// Function declarations for the session. The control set is only appended while
     /// "Let Him Use the Computer" is on — exactly like the original (guardrail 8).
+    /// Descriptions and argument schemas are the original's, word for word.
     /// </summary>
     public static JsonArray Tools(bool computerControl)
     {
@@ -112,7 +131,7 @@ public static class RealtimeSpec
                 "Take a fresh look at the user's screen. Returns the frontmost app, its clickable controls (C ids), every piece of text (lines L#, words W#) with positions on a 0-1000 grid, and a screenshot. Call this before pointing or acting, and again whenever the screen may have changed."),
             Tool("point_at",
                 "Fly your cursor to something on screen and keep pointing there while you talk about it. Use the most specific id (a single word or number over a whole line). Call it right before you mention the thing.",
-                new JsonObject { ["target_id"] = Prop("string", "An id from look_at_screen, like W12, L3 or C4.") },
+                new JsonObject { ["target_id"] = Prop("STRING", "An id from look_at_screen, like W12, L3 or C4.") },
                 ["target_id"]),
             Tool("point_at_spot",
                 "Point at something that isn't text (a shape, arrow, chart bar, image) using its position on the 0-1000 grid of the last screenshot.",
@@ -120,7 +139,7 @@ public static class RealtimeSpec
                 ["x", "y"]),
             Tool("web_research",
                 "Look something up on the web and put a short report (title plus up to four paragraphs, with sources) on the user's screen. Use for anything you're not sure of, anything recent, or anything that needs facts, prices, news or details. Before calling it, point at the relevant thing if there is one and reply with one short line that ends with \"doing some research…\".",
-                new JsonObject { ["question"] = Prop("string", "What to research, as a clear, self-contained question.") },
+                new JsonObject { ["question"] = Prop("STRING", "What to research, as a clear, self-contained question.") },
                 ["question"]),
             Tool("stop_pointing",
                 "Bring your cursor back home when you're done pointing."),
@@ -136,21 +155,21 @@ public static class RealtimeSpec
                 ["target_id"] = Target(),
                 ["x"] = GridX(),
                 ["y"] = GridY(),
-                ["double"] = Prop("boolean", "Double-click instead of a single click."),
-                ["right"] = Prop("boolean", "Right-click (for context menus)."),
+                ["double"] = Prop("BOOLEAN", "Double-click instead of a single click."),
+                ["right"] = Prop("BOOLEAN", "Right-click (for context menus)."),
             }));
         list.Add(Tool("type_text",
             "Type text into whatever is focused, like a keyboard. Click the field first. A newline presses Return. Returns the screen afterwards if press_return is true.",
             new JsonObject
             {
-                ["text"] = Prop("string"),
-                ["press_return"] = Prop("boolean", "Press Return after typing (e.g. to search or submit)."),
+                ["text"] = Prop("STRING"),
+                ["press_return"] = Prop("BOOLEAN", "Press Return after typing (e.g. to search or submit)."),
             },
             ["text"]));
         list.Add(Tool("press_keys",
             // D10: cmd+t → ctrl+t, cmd+shift+n → ctrl+shift+n.
             "Press a key or keyboard shortcut, like \"ctrl+t\", \"ctrl+l\", \"return\", \"escape\", \"tab\", \"down\" or \"ctrl+shift+n\". Returns the screen afterwards.",
-            new JsonObject { ["keys"] = Prop("string") },
+            new JsonObject { ["keys"] = Prop("STRING") },
             ["keys"]));
         list.Add(Tool("scroll",
             "Scroll the page under a target or spot (or the middle of the screen). Returns the screen afterwards.",
@@ -158,10 +177,10 @@ public static class RealtimeSpec
             {
                 ["direction"] = new JsonObject
                 {
-                    ["type"] = "string",
+                    ["type"] = "STRING",
                     ["enum"] = new JsonArray("up", "down", "left", "right"),
                 },
-                ["amount"] = Prop("number", "How far, 1 (a little) to 10 (a lot). Default 3."),
+                ["amount"] = Prop("NUMBER", "How far, 1 (a little) to 10 (a lot). Default 3."),
                 ["target_id"] = Target(),
                 ["x"] = GridX(),
                 ["y"] = GridY(),
@@ -181,11 +200,11 @@ public static class RealtimeSpec
         list.Add(Tool("open_app",
             // D10: Windows app examples.
             "Open an app or switch to it by name, like \"Chrome\", \"Notepad\" or \"Paint\". Returns the screen afterwards.",
-            new JsonObject { ["name"] = Prop("string") },
+            new JsonObject { ["name"] = Prop("STRING") },
             ["name"]));
         list.Add(Tool("open_url",
             "Open a website in the default browser, like \"excalidraw.com\" or a full link. Returns the screen afterwards.",
-            new JsonObject { ["url"] = Prop("string") },
+            new JsonObject { ["url"] = Prop("STRING") },
             ["url"]));
         return list;
     }
@@ -193,46 +212,74 @@ public static class RealtimeSpec
     // MARK: Session
 
     /// <summary>
-    /// The session handed to the minting endpoint — the exact shape of
-    /// <c>RealtimeHost.session</c>: text output only, PCM 24 kHz input, server VAD that
-    /// never triggers a response by itself, near-field noise reduction, live
-    /// transcription, the tools and <c>tool_choice:auto</c>.
+    /// The session config locked into the minted token — the Gemini Live API equivalent
+    /// of <c>RealtimeHost.session</c>. The shape is the SDK's LiveConnectConfig as the
+    /// <c>auth_tokens</c> endpoint expects it inside <c>liveConnectConstraints.config</c>.
+    /// He never talks out loud: the model answers in audio (native-audio models can't do
+    /// text-only), the phone reads the output transcription and shows it as his speech
+    /// bubble. Manual activity detection means the server never answers on its own —
+    /// only when the phone signals the end of a held question — mirroring the original's
+    /// <c>server_vad create_response:false</c>. Input and output transcriptions feed the
+    /// saved session transcript, and sliding-window compression keeps all-day sessions
+    /// inside the context window.
     /// </summary>
-    public static JsonObject Session(string? savedPersonality, bool computerControl) => new()
+    public static JsonObject LiveConfig(string? savedPersonality, bool computerControl) => new()
     {
-        ["type"] = "realtime",
-        ["model"] = Model,
-        ["instructions"] = Instructions(savedPersonality, computerControl),
-        // He never talks out loud: replies are text, shown as speech bubbles.
-        ["output_modalities"] = new JsonArray("text"),
-        ["audio"] = new JsonObject
+        ["systemInstruction"] = new JsonObject
         {
-            ["input"] = new JsonObject
+            ["parts"] = new JsonArray(new JsonObject
             {
-                ["format"] = new JsonObject { ["type"] = "audio/pcm", ["rate"] = 24000 },
-                // Everything the user says is transcribed into the conversation as context, but he only
-                // answers when the phone asks for a response (while you hold the screen).
-                ["turn_detection"] = new JsonObject
-                {
-                    ["type"] = "server_vad",
-                    ["threshold"] = 0.5,
-                    ["prefix_padding_ms"] = 300,
-                    ["silence_duration_ms"] = 500,
-                    ["create_response"] = false,
-                    ["interrupt_response"] = false,
-                },
-                ["noise_reduction"] = new JsonObject { ["type"] = "near_field" },
-                ["transcription"] = new JsonObject { ["model"] = "gpt-4o-mini-transcribe" },
+                ["text"] = Instructions(savedPersonality, computerControl),
+            }),
+        },
+        ["tools"] = new JsonArray(new JsonObject
+        {
+            ["functionDeclarations"] = Tools(computerControl),
+        }),
+        ["responseModalities"] = new JsonArray("AUDIO"),
+        ["speechConfig"] = new JsonObject
+        {
+            ["voiceConfig"] = new JsonObject
+            {
+                ["prebuiltVoiceConfig"] = new JsonObject { ["voiceName"] = Voice },
             },
         },
-        ["tools"] = Tools(computerControl),
-        ["tool_choice"] = "auto",
+        ["realtimeInputConfig"] = new JsonObject
+        {
+            ["automaticActivityDetection"] = new JsonObject { ["disabled"] = true },
+        },
+        ["inputAudioTranscription"] = new JsonObject(),
+        ["outputAudioTranscription"] = new JsonObject(),
+        ["contextWindowCompression"] = new JsonObject
+        {
+            ["slidingWindow"] = new JsonObject(),
+        },
     };
 
-    /// <summary>The body for POST /v1/realtime/client_secrets: a 600 s TTL anchored at creation.</summary>
-    public static JsonObject MintRequestBody(string? savedPersonality, bool computerControl) => new()
+    /// <summary>
+    /// The body for POST /v1beta/auth_tokens: a single-use ephemeral token that can
+    /// start sessions for ten minutes (the original's 600 s secret TTL) and carries
+    /// messages for thirty (the documented default), with the whole session config
+    /// locked inside so the phone only ever holds the token.
+    /// </summary>
+    public static JsonObject MintRequestBody(
+        string? savedPersonality, bool computerControl, string? model, DateTime utcNow)
     {
-        ["expires_after"] = new JsonObject { ["anchor"] = "created_at", ["seconds"] = 600 },
-        ["session"] = Session(savedPersonality, computerControl),
-    };
+        var modelName = ModelName(model);
+        return new JsonObject
+        {
+            ["uses"] = 1,
+            ["expireTime"] = Timestamp(utcNow.AddMinutes(30)),
+            ["newSessionExpireTime"] = Timestamp(utcNow.AddSeconds(600)),
+            ["liveConnectConstraints"] = new JsonObject
+            {
+                ["model"] = "models/" + modelName,
+                ["config"] = LiveConfig(savedPersonality, computerControl),
+            },
+        };
+    }
+
+    /// <summary>RFC 3339 UTC, second precision — the format the docs' examples use.</summary>
+    private static string Timestamp(DateTime t) =>
+        t.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
 }

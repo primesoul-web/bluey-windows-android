@@ -19,7 +19,9 @@ import org.junit.Test
 
 /**
  * The LiveVoice state machine, driven through a fake transport: wake, hold-to-ask,
- * streaming replies, tool relay, go_to_sleep and the reconnect with context replay.
+ * streaming replies, tool relay, go_to_sleep and the reconnect with context replay —
+ * all against the Gemini Live API's message shapes (setup gating, activity signals,
+ * transcription turns, tool calls).
  *
  * The live scope runs on the test scheduler (UnconfinedTestDispatcher), so everything
  * the machine does inline executes eagerly and queued continuations flush with
@@ -50,8 +52,14 @@ class LiveVoiceTest {
         }
 
         fun deliver(text: String) = onEvent!!.invoke(text)
+
+        /** The server accepting the locked session — what the phone waits for. */
+        fun ready(model: String? = null) {
+            deliver("""{"setupComplete":{}}""")
+        }
+
         fun drop() = onClosed!!.invoke()
-        fun sentText(type: String) = sent.filter { it.contains("\"$type\"") }
+        fun sentText(part: String) = sent.filter { it.contains("\"$part\"") }
     }
 
     private class FakeMic : MicSource {
@@ -77,16 +85,30 @@ class LiveVoiceTest {
 
     private class FakeChirp : ChirpSink {
         val played = mutableListOf<Int>()
+        val dones = mutableListOf<() -> Unit>()
+        var autoComplete = true
         override var pendingBuffers: Int = 0
         override var level: Double = 0.0
 
         override fun play(samples: FloatArray, volume: Float, onDone: () -> Unit) {
             played.add(samples.size)
-            onDone() // completes immediately; finishIfQuiet sees a quiet chirp
+            if (autoComplete) {
+                onDone() // completes immediately; finishIfQuiet sees a quiet chirp
+            } else {
+                pendingBuffers++ // mid-flight until finishAll
+                dones.add(onDone)
+            }
         }
 
         override fun stopAll() {
             played.clear()
+        }
+
+        fun finishAll() {
+            val pending = dones.toList()
+            dones.clear()
+            pendingBuffers = 0
+            pending.forEach { it() }
         }
     }
 
@@ -108,7 +130,8 @@ class LiveVoiceTest {
     }
 
     private fun TestScope.build(
-        token: String? = "minted-secret",
+        token: String? = "auth_tokens/minted",
+        model: String? = "gemini-3.8-live",
         context: String? = null,
         toolRunner: ((String, String, (String, String?) -> Unit) -> Unit)? = null,
     ): LiveVoice {
@@ -119,7 +142,7 @@ class LiveVoiceTest {
             mic = mic,
             chirps = chirp,
         ).apply {
-            requestToken = { done -> done(token) }
+            requestToken = { done -> done(token, model) }
             resumeContext = { context }
             runTool = toolRunner
         }
@@ -128,14 +151,19 @@ class LiveVoiceTest {
     private fun TestScope.pump() = runCurrent()
 
     @Test
-    fun `wake starts the mic the session and a two-syllable chirp`() = runTest {
+    fun `wake sends the setup then starts the mic the session and a two-syllable chirp`() = runTest {
         var sessionStarted = 0
         val live = build()
         live.onSessionStart = { sessionStarted++ }
 
         live.wake()
 
-        assertTrue(transport.open)
+        // The setup naming the minted model is the first thing on the wire.
+        assertEquals("""{"setup":{"model":"models/gemini-3.8-live"}}""", transport.sent.first())
+        assertEquals(LiveVoice.State.Waking, live.state) // nothing runs before setupComplete
+
+        transport.ready()
+
         assertEquals(1, mic.started)
         assertEquals(1, sessionStarted)
         assertEquals(1, chirp.played.size) // chirp(syllables: 2) on connect
@@ -153,7 +181,7 @@ class LiveVoiceTest {
             chirps = chirp,
             requestMicPermission = { done -> done(false) },
         ).apply {
-            requestToken = { done -> done("token") }
+            requestToken = { done -> done("token", null) }
             onCaption = { text, done -> caption = text to done }
         }
 
@@ -174,32 +202,36 @@ class LiveVoiceTest {
     }
 
     @Test
-    fun `hold to ask commits the buffer and requests a response`() = runTest {
+    fun `hold to ask frames the question with the activity signals`() = runTest {
         val live = build()
         live.wake()
+        transport.ready()
 
         live.beginAsk()
         assertEquals(LiveVoice.State.Asking, live.state)
+        assertEquals(1, transport.sentText("activityStart").size)
 
         live.endAsk()
         assertEquals(LiveVoice.State.Thinking, live.state)
-        assertEquals(1, transport.sentText("input_audio_buffer.commit").size)
-        assertEquals(1, transport.sentText("response.create").size)
+        assertEquals(1, transport.sentText("activityEnd").size)
+        // The Live API has no commit or response.create — the activity end is the ask.
+        assertTrue(transport.sent.none { it.contains("commit") || it.contains("response.create") })
     }
 
     @Test
     fun `holding while asleep wakes him straight into asking`() = runTest {
         val live = build()
         live.beginAsk() // before wake: wakes with the finger still down
-        assertEquals(LiveVoice.State.Asking, live.state)
-        live.endAsk()
+        assertEquals(LiveVoice.State.Waking, live.state) // waiting on the locked session
+        live.endAsk() // let go early: askWhenReady
+        transport.ready()
         assertEquals(LiveVoice.State.Thinking, live.state)
-        assertTrue(transport.sentText("response.create").isNotEmpty())
+        assertTrue(transport.sentText("activityEnd").isNotEmpty())
     }
 
     @Test
-    fun `released before the session is ready asks as soon as it is`() = runTest {
-        var handBack: ((String?) -> Unit)? = null
+    fun `released before the token arrives asks as soon as the session is ready`() = runTest {
+        var handBack: ((String?, String?) -> Unit)? = null
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         val live = LiveVoice(
             scope = scope,
@@ -213,9 +245,10 @@ class LiveVoiceTest {
         live.beginAsk() // wakes; still Waking while the token is pending
         assertEquals(LiveVoice.State.Waking, live.state)
         live.endAsk() // let go early: askWhenReady
-        handBack?.invoke("slowly-minted")
+        handBack?.invoke("auth_tokens/slowly-minted", "gemini-3.8-live")
+        transport.ready()
         assertEquals(LiveVoice.State.Thinking, live.state)
-        assertTrue(transport.sentText("response.create").isNotEmpty())
+        assertTrue(transport.sentText("activityEnd").isNotEmpty())
     }
 
     @Test
@@ -226,18 +259,18 @@ class LiveVoiceTest {
         live.onCaption = { text, done -> captions.add(text to done) }
         live.onReply = { replies.add(it) }
         live.wake()
+        transport.ready()
         chirp.played.clear()
 
-        transport.deliver("""{"type":"response.created"}""")
-        transport.deliver("""{"type":"response.output_text.delta","delta":"That's the"}""")
-        transport.deliver("""{"type":"response.output_text.delta","delta":" prompt box."}""")
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"That's the"}}}""")
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":" prompt box."}}}""")
 
         assertEquals(LiveVoice.State.Speaking, live.state)
-        assertEquals(1, chirp.played.size) // chirped on the first non-empty delta
+        assertEquals(1, chirp.played.size) // chirped on the first non-empty transcription
         assertEquals("That's the", captions[0].first)
         assertEquals("That's the prompt box.", captions[1].first)
 
-        transport.deliver("""{"type":"response.done","response":{"output":[]}}""")
+        transport.deliver("""{"serverContent":{"turnComplete":true}}""")
 
         assertEquals("That's the prompt box.", captions.last().first)
         assertEquals(true, captions.last().second)
@@ -246,47 +279,60 @@ class LiveVoiceTest {
     }
 
     @Test
-    fun `committed turns remember whether they were questions`() = runTest {
+    fun `running transcriptions replace instead of duplicating`() = runTest {
+        val captions = mutableListOf<String>()
+        val live = build()
+        live.onCaption = { text, _ -> captions.add(text) }
+        live.wake()
+        transport.ready()
+
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Hi"}}}""")
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Hi there"}}}""")
+
+        assertEquals(listOf("Hi", "Hi there"), captions)
+    }
+
+    @Test
+    fun `heard turns remember whether they were questions`() = runTest {
         val turns = mutableListOf<Pair<String, Boolean>>()
         val words = mutableListOf<Triple<String, String, Boolean>>()
         val live = build()
         live.onUserTurn = { item, asked -> turns.add(item to asked) }
         live.onUserWords = { item, text, asked -> words.add(Triple(item, text, asked)) }
         live.wake()
+        transport.ready()
 
         live.beginAsk()
-        live.endAsk() // awaitingQuestion = true
-        transport.deliver("""{"type":"input_audio_buffer.committed","item_id":"item_q"}""")
-        transport.deliver(
-            """{"type":"conversation.item.input_audio_transcription.completed","item_id":"item_q","transcript":"what's this?"}""",
-        )
+        transport.deliver("""{"serverContent":{"inputTranscription":{"text":"what's"}}}""")
+        transport.deliver("""{"serverContent":{"inputTranscription":{"text":" this?"}}}""")
+        live.endAsk() // awaitingQuestion = true; the response follows
 
-        assertEquals("item_q" to true, turns[0])
-        assertEquals(Triple("item_q", "what's this?", true), words[0])
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"The prompt box."}}}""")
+        transport.deliver("""{"serverContent":{"turnComplete":true}}""")
 
-        // A later overheard turn (no question in flight) is not a question.
-        transport.deliver("""{"type":"input_audio_buffer.committed","item_id":"item_bg"}""")
-        transport.deliver(
-            """{"type":"conversation.item.input_audio_transcription.completed","item_id":"item_bg","transcript":"background chatter"}""",
-        )
-        assertEquals("item_bg" to false, turns[1])
-        assertEquals(Triple("item_bg", "background chatter", false), words[1])
+        assertEquals("u0" to true, turns[0])
+        assertEquals(Triple("u0", "what's", true), words[0])
+        assertEquals(Triple("u0", "what's this?", true), words[1])
+
+        // Words overheard after the exchange start a fresh turn, not a question.
+        transport.deliver("""{"serverContent":{"inputTranscription":{"text":"background chatter"}}}""")
+        assertEquals("u1" to false, turns[1])
+        assertEquals(Triple("u1", "background chatter", false), words[2])
     }
 
     @Test
-    fun `an empty commit clears the pending question`() = runTest {
-        val turns = mutableListOf<Pair<String, Boolean>>()
+    fun `interrupted mid reply settles back to asking while you hold`() = runTest {
         val live = build()
-        live.onUserTurn = { item, asked -> turns.add(item to asked) }
         live.wake()
+        transport.ready()
 
-        live.beginAsk()
-        live.endAsk()
-        transport.deliver(
-            """{"type":"error","error":{"code":"input_audio_buffer_commit_empty","message":"empty"}}""",
-        )
-        transport.deliver("""{"type":"input_audio_buffer.committed","item_id":"item_x"}""")
-        assertEquals("item_x" to false, turns[0])
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Well"}}}""")
+        assertEquals(LiveVoice.State.Speaking, live.state)
+
+        live.beginAsk() // a new question cuts him off
+        transport.deliver("""{"serverContent":{"interrupted":true}}""")
+
+        assertEquals(LiveVoice.State.Asking, live.state)
     }
 
     @Test
@@ -294,28 +340,33 @@ class LiveVoiceTest {
         val live = build(
             toolRunner = { name, arguments, done ->
                 assertEquals("point_at", name)
+                assertEquals("{\"target_id\":\"W3\"}", arguments)
                 done("Pointing at \"Googly\".", "c2NyZWVu")
             },
         )
         live.wake()
+        transport.ready()
         transport.sent.clear()
 
         transport.deliver(
-            """
-            {"type":"response.done","response":{"output":[
-              {"type":"function_call","name":"point_at","call_id":"call_1","arguments":"{\"target_id\":\"W3\"}"}
-            ]}}
-            """.trimIndent(),
+            """{"toolCall":{"functionCalls":[{"name":"point_at","id":"call_1","args":{"target_id":"W3"}}]}}""",
         )
 
-        // Thinking until the follow-up response he asked for arrives.
+        // Thinking until the follow-up reply he asked for arrives.
         assertEquals(LiveVoice.State.Thinking, live.state)
-        val output = transport.sentText("function_call_output").single()
-        assertTrue(output.contains("\"call_id\":\"call_1\""))
+        val output = transport.sentText("toolResponse").single()
+        assertTrue(output.contains("\"id\":\"call_1\""))
+        assertTrue(output.contains("\"name\":\"point_at\""))
         assertTrue(output.contains("Pointing at \\\"Googly\\\"."))
-        val image = transport.sentText("input_image").single()
-        assertTrue(image.contains("data:image/jpeg;base64,c2NyZWVu"))
-        assertEquals(1, transport.sentText("response.create").size)
+        // The screenshot goes back in as a user turn that completes it — the original's
+        // input_image + response.create pair.
+        val image = transport.sentText("clientContent").single()
+        assertTrue(image.contains("\"mimeType\":\"image/jpeg\""))
+        assertTrue(image.contains("\"data\":\"c2NyZWVu\""))
+        assertTrue(image.contains("\"turnComplete\":true"))
+        // Outputs first, then the image — the original's order.
+        assertTrue(transport.sent.indexOfFirst { it.contains("toolResponse") } <
+            transport.sent.indexOfFirst { it.contains("clientContent") })
     }
 
     @Test
@@ -331,14 +382,9 @@ class LiveVoiceTest {
         )
         live.onReport = { reports.add(it) }
         live.wake()
+        transport.ready()
 
-        transport.deliver(
-            """
-            {"type":"response.done","response":{"output":[
-              {"type":"function_call","name":"web_research","call_id":"call_r","arguments":"{}"}
-            ]}}
-            """.trimIndent(),
-        )
+        transport.deliver("""{"toolCall":{"functionCalls":[{"name":"web_research","id":"call_r"}]}}""")
         pump()
 
         assertEquals(listOf("Title\n\nParagraph one"), reports)
@@ -352,20 +398,14 @@ class LiveVoiceTest {
         )
         live.onSessionEnd = { ended++ }
         live.wake()
+        transport.ready()
 
-        transport.deliver(
-            """
-            {"type":"response.done","response":{"output":[
-              {"type":"function_call","name":"go_to_sleep","call_id":"call_z","arguments":"{}"}
-            ]}}
-            """.trimIndent(),
-        )
+        transport.deliver("""{"toolCall":{"functionCalls":[{"name":"go_to_sleep","id":"call_z"}]}}""")
 
         assertEquals(LiveVoice.State.Thinking, live.state) // goodbye pending
 
-        transport.deliver("""{"type":"response.created"}""")
-        transport.deliver("""{"type":"response.output_text.delta","delta":"Night!"}""")
-        transport.deliver("""{"type":"response.done","response":{"output":[]}}""")
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Night!"}}}""")
+        transport.deliver("""{"serverContent":{"turnComplete":true}}""")
 
         assertEquals(LiveVoice.State.Asleep, live.state)
         assertEquals(1, ended)
@@ -377,15 +417,18 @@ class LiveVoiceTest {
     fun `the connection drops and reconnects with the context replay`() = runTest {
         val live = build(context = "Bluey: hi\nYou: what's this?")
         live.wake()
+        transport.ready()
         transport.sent.clear()
 
         transport.drop()
         pump() // flush the reconnect chain queued on the scheduler
 
         assertTrue(transport.open) // already reconnected (the token was instant)
-        val replay = transport.sentText("input_text").single()
+        transport.ready()
+        val replay = transport.sentText("clientContent").single()
         assertTrue(replay.contains("(Context: what I said earlier in this session, from my notes. Don't reply to this.)"))
         assertTrue(replay.contains("Bluey: hi"))
+        assertTrue(replay.contains("\"turnComplete\":false")) // a reminder, not a question
         assertEquals(1, mic.started) // the mic never stopped
     }
 
@@ -397,10 +440,11 @@ class LiveVoiceTest {
         val live = LiveVoice(scope = scope, makeTransport = { transport }, mic = mic, chirps = chirp).apply {
             requestToken = { done ->
                 mints++
-                done(token)
+                done(token, null)
             }
         }
         live.wake()
+        transport.ready() // the locked session goes live; the mic starts
         assertEquals(1, mints)
 
         token = null
@@ -425,8 +469,9 @@ class LiveVoiceTest {
     fun `sleep resets everything`() = runTest {
         val live = build()
         live.wake()
+        transport.ready()
         live.beginAsk()
-        transport.deliver("""{"type":"response.created"}""")
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Hello"}}}""")
 
         live.sleep()
 
@@ -436,6 +481,7 @@ class LiveVoiceTest {
         // Holding state is gone: asking again starts fresh.
         live.beginAsk()
         live.endAsk()
+        transport.ready()
         assertEquals(LiveVoice.State.Thinking, live.state)
     }
 
@@ -443,45 +489,48 @@ class LiveVoiceTest {
     fun `say hi sends the exact test instructions`() = runTest {
         val live = build()
         live.wake()
+        transport.ready()
         transport.sent.clear()
         live.sayHi()
-        val event = transport.sentText("response.create").single()
+        val event = transport.sentText("clientContent").single()
         assertTrue(event.contains("Reply with a quick, cheerful hi in under eight words."))
+        assertTrue(event.contains("\"turnComplete\":true"))
     }
 
     @Test
     fun `say hi while asleep just wakes him`() = runTest {
         val live = build()
         live.sayHi()
+        transport.ready()
         assertEquals(LiveVoice.State.Listening, live.state)
     }
 
     @Test
-    fun `mic audio streams as append events`() = runTest {
+    fun `mic audio streams as realtime input at 16 kHz`() = runTest {
         val live = build()
         live.wake()
+        transport.ready()
         transport.sent.clear()
         mic.speak("QUJD")
         pump()
-        val append = transport.sentText("input_audio_buffer.append").single()
-        assertTrue(append.contains("\"audio\":\"QUJD\""))
+        val chunk = transport.sentText("realtimeInput").single()
+        assertTrue(chunk.contains("\"audio\":{\"data\":\"QUJD\",\"mimeType\":\"audio/pcm;rate=16000\"}"))
     }
 
     @Test
     fun `a chirp still playing keeps him from settling back to listening`() = runTest {
+        chirp.autoComplete = false
         val live = build()
         live.wake()
+        transport.ready()
         chirp.played.clear()
-        chirp.pendingBuffers = 1 // the chirp is mid-flight
 
-        transport.deliver("""{"type":"response.created"}""")
-        transport.deliver("""{"type":"response.output_text.delta","delta":"Hello there"}""")
-        transport.deliver("""{"type":"response.done","response":{"output":[]}}""")
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Hello there"}}}""")
+        transport.deliver("""{"serverContent":{"turnComplete":true}}""")
 
         assertEquals(LiveVoice.State.Speaking, live.state) // waiting on the chirp
 
-        chirp.pendingBuffers = 0
-        transport.deliver("""{"type":"response.done","response":{"output":[]}}""")
+        chirp.finishAll()
         assertEquals(LiveVoice.State.Listening, live.state)
     }
 }

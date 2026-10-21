@@ -13,14 +13,14 @@ This is a port of **[Bluey](https://github.com/rbrown101010/bluey-by-riley)** by
 5. When you ask him to act (click, type, press keys, scroll, drag, open apps and sites) he does it with his own cursor while your real pointer is parked where you left it. He confirms out loud before anything hard to undo, refuses password fields and log-out shortcuts, and there is a stop key that halts him instantly.
 6. While a session runs, the phone records the room in five-minute chunks; the PC transcribes them with speaker labels into `Documents\Bluey Notes\` — `notes.md`, `session.json`, and the raw `audio\`.
 
-The OpenAI key lives only on the PC (DPAPI-encrypted `%APPDATA%\Googly\keys.json`). The phone only ever receives ten-minute client secrets that carry the whole session setup — the real key never leaves the PC.
+The Gemini API key (from [Google AI Studio](https://aistudio.google.com/api-keys)) lives only on the PC (DPAPI-encrypted `%APPDATA%\Googly\keys.json`). The phone only ever receives single-use ten-minute ephemeral tokens with the whole session setup locked inside them — the real key never leaves the PC.
 
 ## Status
 
 - [x] Step 1 — full feature inventory of the original (every file, every issue/PR)
 - [x] Step 2 — repo skeleton, parity contract, wire-protocol spec, CI
 - [x] M1 — protocol + pairing (NDJSON codec on both platforms, mDNS advertise/browse, hello/face streams, throttling, tray skeleton, PairingView)
-- [x] M2 — realtime voice + character
+- [x] M2 — realtime voice + character (Gemini Live API: ephemeral-token minting, WSS client, hold-to-ask, chirp synthesis, FaceView, sessions)
 - [ ] M3 — pointing + overlay + research card
 - [ ] M4 — computer control
 - [ ] M5 — meeting notes
@@ -49,7 +49,7 @@ CI builds the **Android APK** and the **Windows EXE** on every push: see [Action
 | Parity scope | Original `main` branch only; unmerged upstream PRs go to the backlog |
 | Meeting-notes strings | "Riley asked Bluey" etc. kept byte-for-byte for exact output parity |
 | Wire protocol | Byte-compatible with the original (`shared-protocol/`) |
-| Realtime API | `gpt-realtime-2.1`, text output only, no `OpenAI-Beta` header (the API dropped it) |
+| Realtime API | **Gemini Live API** (`gemini-3.8-live`, from an AI Studio key) — switched from OpenAI Realtime per the user's decision; replies arrive as text bubbles via output transcription, his voice is the chirp |
 
 Full detail and rationale: [`PARITY.md`](PARITY.md).
 
@@ -71,7 +71,7 @@ Or grab the artifacts from the latest [CI run](../../actions).
 
 ## Security
 
-- The OpenAI key is entered in the tray menu, stored DPAPI-encrypted at `%APPDATA%\Googly\keys.json`, and never committed (`.gitignore` blocks `keys.json`, `*.env`, and build output).
+- The Gemini API key is entered in the tray menu, stored DPAPI-encrypted at `%APPDATA%\Googly\keys.json`, and never committed (`.gitignore` blocks `keys.json`, `*.env`, and build output).
 - The phone↔PC link is plaintext TCP on the LAN, exactly like the original. Optional TLS-PSK hardening is discussed in [`BACKLOG.md`](BACKLOG.md).
 - Secrets are scanned before every push.
 

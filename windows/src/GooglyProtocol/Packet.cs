@@ -117,6 +117,12 @@ public sealed class Packet
     /// <summary>Base64 JPEG that goes with a tool result.</summary>
     [JsonPropertyName("image")]
     public string? Image { get; init; }
+
+    /// <summary>Port addition: on a realtimeToken reply, the Live model the secret was
+    /// minted for (e.g. "gemini-3.8-live"), so the phone can address its setup message.
+    /// Unknown to the original app and safely ignored by older peers (wire rule 5).</summary>
+    [JsonPropertyName("model")]
+    public string? Model { get; init; }
 }
 
 /// <summary>

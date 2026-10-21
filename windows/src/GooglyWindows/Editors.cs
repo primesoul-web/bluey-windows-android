@@ -5,25 +5,26 @@ using GooglyRealtime;
 namespace GooglyWindows;
 
 /// <summary>
-/// The OpenAI API key sheet — port of <c>AppDelegate.editKeys</c>: a secure field, the
-/// reassuring note, Save/Cancel. D10: "this Mac" → "this PC".
+/// The Gemini API key sheet — port of <c>AppDelegate.editKeys</c>: a secure field, the
+/// reassuring note, Save/Cancel. D10: "this Mac" → "this PC"; D11: the key comes from
+/// Google AI Studio (aistudio.google.com/api-keys).
 /// </summary>
 public sealed class KeyWindow : Window
 {
-    public KeyWindow(OpenAiKeyStore keys)
+    public KeyWindow(ApiKeyStore keys)
     {
-        Title = "OpenAI API Key";
+        Title = "Gemini API Key";
         Width = 420;
         SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ShowInTaskbar = false;
         ResizeMode = ResizeMode.NoResize;
 
-        var saved = keys.Get("openai");
+        var saved = keys.Get("gemini");
         var field = new PasswordBox { Height = 28 };
         var hint = new TextBlock
         {
-            Text = saved is null ? "sk-…" : "Key saved. Paste a new one to replace it.",
+            Text = saved is null ? "AIza…" : "Key saved. Paste a new one to replace it.",
             Foreground = System.Windows.Media.Brushes.Gray,
             VerticalAlignment = VerticalAlignment.Center,
             IsHitTestVisible = false,
@@ -41,7 +42,7 @@ public sealed class KeyWindow : Window
         save.Click += (_, _) =>
         {
             var key = field.Password.Trim();
-            if (key.Length > 0) keys.Set("openai", key);
+            if (key.Length > 0) keys.Set("gemini", key);
             DialogResult = true;
         };
 
@@ -52,14 +53,14 @@ public sealed class KeyWindow : Window
         var root = new StackPanel { Margin = new Thickness(22) };
         root.Children.Add(new TextBlock
         {
-            Text = "OpenAI API Key",
+            Text = "Gemini API Key",
             FontSize = 15,
             FontWeight = FontWeights.SemiBold,
             Margin = new Thickness(0, 0, 0, 6),
         });
         root.Children.Add(new TextBlock
         {
-            Text = "Saved privately on this PC (not in the project files). The phone only ever gets short-lived keys.",
+            Text = "From aistudio.google.com/api-keys. Saved privately on this PC (not in the project files). The phone only ever gets short-lived keys.",
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.75,
             Margin = new Thickness(0, 0, 0, 14),

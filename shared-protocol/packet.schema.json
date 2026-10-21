@@ -63,6 +63,11 @@
       "type": "string",
       "contentEncoding": "base64",
       "description": "Base64 JPEG accompanying a toolResult (the screenshot from look_at_screen)."
+    },
+    "model": {
+      "type": "string",
+      "description": "Port addition (unknown to the original, ignored by older peers): on a realtimeToken reply, the Live model the secret was minted for, e.g. gemini-3.8-live, so the phone can address its setup message.",
+      "examples": ["gemini-3.8-live"]
     }
   },
   "$defs": {

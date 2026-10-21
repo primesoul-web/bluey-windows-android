@@ -124,6 +124,13 @@ public sealed class HostSettings : IDisposable
         set => Set("personality", value);
     }
 
+    /// <summary>Port addition (D11): the Gemini Live model sessions are minted for.</summary>
+    public string RealtimeModel
+    {
+        get => Get("realtimeModel", "gemini-3.8-live");
+        set => Set("realtimeModel", value);
+    }
+
     public void Dispose()
     {
         if (_disposed) return;

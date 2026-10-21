@@ -1,5 +1,5 @@
 {"command":"realtimeToken","callID":"9F13C2E4-7B8A-4C1D-9E5F-2A6B8C0D4E6F"}
-{"command":"realtimeToken","callID":"9F13C2E4-7B8A-4C1D-9E5F-2A6B8C0D4E6F","text":"googly-live-abc123def456"}
+{"command":"realtimeToken","callID":"9F13C2E4-7B8A-4C1D-9E5F-2A6B8C0D4E6F","text":"googly-live-abc123def456","model":"gemini-3.8-live"}
 {"command":"realtimeToken","callID":"9F13C2E4-7B8A-4C1D-9E5F-2A6B8C0D4E6F"}
 {"command":"tool","callID":"C2D4E6F8-A1B3-C5D7-E9F1-2A4B6C8D0E2F","tool":"look_at_screen","text":"{}"}
 {"command":"toolResult","callID":"C2D4E6F8-A1B3-C5D7-E9F1-2A4B6C8D0E2F","text":"Frontmost app: Chrome","image":"aGVsbG8="}

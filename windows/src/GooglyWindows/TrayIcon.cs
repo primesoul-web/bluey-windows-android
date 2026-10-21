@@ -150,7 +150,7 @@ public sealed class TrayIcon : IDisposable
         personality.Click += (_, _) => EditPersonalityRequested?.Invoke();
         menu.Items.Add(personality);
 
-        var key = new MenuItem { Header = "OpenAI Key…" };
+        var key = new MenuItem { Header = "Gemini API Key…" };
         key.Click += (_, _) => EditKeysRequested?.Invoke();
         menu.Items.Add(key);
 

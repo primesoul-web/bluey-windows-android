@@ -6,8 +6,8 @@ using GooglyRealtime;
 namespace GooglyWindows;
 
 /// <summary>
-/// The PC's half of live voice. The phone runs the OpenAI Realtime session (its mic, its
-/// speaker); the PC hands it a short-lived key, runs its tools and shows captions.
+/// The PC's half of live voice. The phone runs the Gemini Live session (its mic, its
+/// speaker); the PC hands it a short-lived token, runs its tools and shows captions.
 /// Port of the M2 slice of <c>RealtimeHost.swift</c> — the cursor-driven parts (pointing
 /// choreography, control pacing) land with M3/M4. Everything here runs on the UI thread,
 /// alongside the tray it drives.
@@ -19,7 +19,7 @@ public sealed class RealtimeHost
         new(StringComparer.Ordinal) { "click", "type_text", "press_keys", "scroll", "drag", "open_app", "open_url" };
 
     private readonly HostSettings _settings;
-    private readonly OpenAiKeyStore _keys;
+    private readonly ApiKeyStore _keys;
     private readonly RealtimeMinter _minter;
     private readonly CaptionWindow _captions;
 
@@ -34,7 +34,7 @@ public sealed class RealtimeHost
 
     public event Action? Changed;
 
-    public RealtimeHost(HostSettings settings, OpenAiKeyStore keys, RealtimeMinter minter, CaptionWindow captions)
+    public RealtimeHost(HostSettings settings, ApiKeyStore keys, RealtimeMinter minter, CaptionWindow captions)
     {
         _settings = settings;
         _keys = keys;
@@ -119,9 +119,10 @@ public sealed class RealtimeHost
     {
         try
         {
-            var token = await _minter.MintAsync(
-                _keys.Get("openai"), _settings.Personality, _settings.ComputerControl).ConfigureAwait(true);
-            reply(new Packet { Command = "realtimeToken", CallID = packet.CallID, Text = token });
+            var (token, model) = await _minter.MintAsync(
+                _keys.Get("gemini"), _settings.Personality, _settings.ComputerControl,
+                _settings.RealtimeModel).ConfigureAwait(true);
+            reply(new Packet { Command = "realtimeToken", CallID = packet.CallID, Text = token, Model = model });
         }
         catch (RealtimeMintException e)
         {
