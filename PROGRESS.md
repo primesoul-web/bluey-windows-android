@@ -294,3 +294,41 @@ Toolchain note: `toolchains/` was wiped again; .NET 10 SDK now lives at
 
 Deliverable: `download/Bluey-windows-0.3.1.zip` (+ WHATS-NEW.txt inside).
 102 Windows tests green. Not pushed — no token this session; commit is local.
+
+## v0.3.3 — the phone's token request vanished in transit (2026-10-22)
+
+User evidence (log.txt + screenshots, build 0.3.2 CI exe): self-test mint OK,
+WSS OK, binary frames decoded, leg B turn OK ("Hello there, how are you?");
+phone connected + listed ("phones: Phone" is just the placeholder before its
+hello; "phones: Redmi Note 10S" is the same phone after hello). But during
+hold-to-ask the PC log shows **zero** `realtimeToken` requests and **zero**
+mints — only hotkey `broadcast wake` lines — while the phone showed the 20 s
+wake timeout (which only fires when the phone believes the link is healthy;
+a known-dead link shows "I can't find your PC" instead). Conclusion: the
+request went into a phone→PC black hole on a link the phone trusted.
+
+Fixes (both platforms, version 0.3.3):
+- **Phone — self-healing token request.** `PacketDispatcher` gains per-request
+  reply timeouts (tools keep waiting forever: slow tools are legitimate).
+  MainActivity's `requestToken` now: waits up to 2.5 s for a link that's still
+  landing (fresh from background) → asks with a 6 s timeout → on silence,
+  **kills the zombie link, reconnects, asks once more** — all inside LiveVoice's
+  20 s wake watchdog. `SocketLink.send` failures now tear the link down instead
+  of being swallowed. `PcLink.forceReconnect()` added.
+- **PC — forensic logging.** PhoneServer logs any packet that carries no
+  Command (previously decoded then silently dropped, invisible in the log).
+  Nothing a phone sends is ever invisible again.
+- **PC — self-test now tests the real path first.** Leg A is the phone's exact
+  hold-to-ask wire flow (activityStart + tone chunks + activityEnd). The old
+  first leg (text inside realtimeInput) is gone: gemini-3.8-live rejects that
+  envelope outright (close 1007 "Precondition check failed"), so it always
+  failed and leg B's success masked the audio path, which never got run.
+- Versions: Windows 0.3.3, Android versionCode 3 / 0.3.3.
+
+Tests: 117 Windows + 110 Android green (3 new dispatcher-timeout tests, 1 new
+PhoneServer forensic-log test). APK + full sln build clean.
+
+Sandbox-built binaries remain untrustworthy on the user's PC (the 0.3.2
+sandbox exe never opened; the CI exe runs) — **deliverables are CI artifacts
+only**: `bluey-windows-framework.zip`, `bluey-windows-selfcontained.zip`,
+`bluey-android-apk`.

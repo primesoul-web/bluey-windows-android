@@ -55,7 +55,7 @@ class PcLink(private val context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val nsd by lazy { context.getSystemService(Context.NSD_SERVICE) as NsdManager }
-    private val dispatcher = PacketDispatcher(::send) { command -> onCommand?.invoke(command) }
+    private val dispatcher = PacketDispatcher(::send, { command -> onCommand?.invoke(command) }, timeoutScope = scope)
 
     private var discoveryListener: NsdManager.DiscoveryListener? = null
     private val services = LinkedHashMap<String, NsdServiceInfo>()
@@ -167,14 +167,33 @@ class PcLink(private val context: Context) {
         link?.send(packet)
     }
 
-    /** Sends a request to the PC and calls back with its reply (null if the PC went away). */
-    fun request(packet: Packet, done: (Packet?) -> Unit) {
+    /** Sends a request to the PC and calls back with its reply (null if the PC went
+     * away, or — with timeoutMs set — if no reply arrived in time). */
+    fun request(packet: Packet, timeoutMs: Long = 0, done: (Packet?) -> Unit) {
         val l = link
         if (l == null || !connected.value) {
             done(null)
             return
         }
-        dispatcher.request(packet, done)
+        dispatcher.request(packet, timeoutMs, done)
+    }
+
+    /** Drops the current link and starts a fresh one (port addition, v0.3.3). Used when
+     * a request went unanswered on a link that claims to be healthy — a phone→PC black
+     * hole, where the PC's face stream still arrives but the phone's writes never reach
+     * it. The fresh connection is verified by the hello/face handshake, so anything sent
+     * on it is either delivered or honestly fails. */
+    fun forceReconnect() {
+        if (stopping) return
+        val l = link
+        if (l != null) {
+            link = null
+            l.close() // its onClosed sees link !== l and stays quiet; we clean up here
+        }
+        connected.value = false
+        watchdogJob?.cancel()
+        target.value = null
+        scheduleRetry()
     }
 
     private fun refreshPcs() {

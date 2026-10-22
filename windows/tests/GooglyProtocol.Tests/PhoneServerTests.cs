@@ -89,11 +89,13 @@ public class PhoneServerTests
         public readonly PhoneServer Server = new("Test PC");
         public readonly TaskCompletionSource<int> Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public readonly List<string> PhoneEvents = new();
+        public readonly List<string> LogLines = new();
 
         public ServerHarness()
         {
             Server.Started += port => { try { Started.SetResult(port); } catch { } };
             Server.PhonesChanged += names => { lock (PhoneEvents) PhoneEvents.Add(string.Join(",", names)); };
+            Server.Log += line => { lock (LogLines) LogLines.Add(line); };
             Server.Start();
         }
 
@@ -278,6 +280,37 @@ public class PhoneServerTests
         // …and it can still send the other way.
         harness.Server.Broadcast(new Packet { Command = "wake" });
         Assert.Equal("wake", (await phone.NextAsync()).Command);
+    }
+
+    [Fact]
+    public async Task Commandless_packets_leave_a_forensic_log_line()
+    {
+        // Port addition (v0.3.3): the month-long "the token request vanished" hunt was
+        // blind to any packet that doesn't carry a Command — it was decoded and silently
+        // dropped. Now the shape is named in the log, so nothing a phone sends is invisible.
+        using var harness = new ServerHarness();
+        var port = await harness.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var seenCommands = new List<string>();
+        harness.Server.RequestReceived += (packet, _) =>
+        {
+            lock (seenCommands) seenCommands.Add(packet.Command!);
+        };
+
+        using var phone = new TestPhone(port);
+        await phone.NextAsync(); // server hello
+
+        phone.Send(new Packet { CallID = "stray-id", Text = "stray" }); // reply-shaped, no command
+        phone.Send(new Packet { Command = "awake" });                  // a real command
+        await WaitUntilAsync(() => { lock (seenCommands) return seenCommands.Contains("awake"); });
+
+        lock (harness.LogLines)
+        {
+            // The odd packet is named with its shape…
+            Assert.Contains(harness.LogLines,
+                l => l.Contains("no command") && l.Contains("callID") && l.Contains("text(5)"));
+            // …and commands keep their trace line as before.
+            Assert.Contains(harness.LogLines, l => l.Contains("-> awake"));
+        }
     }
 
     [Fact]

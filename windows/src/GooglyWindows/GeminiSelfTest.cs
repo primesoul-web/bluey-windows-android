@@ -12,14 +12,17 @@ namespace GooglyWindows;
 /// <summary>
 /// "Test Gemini Connection" (port addition, diagnostics): runs the PC's whole half of a
 /// live session with no phone involved, mapping exactly which leg is broken in one tray
-/// click. Leg A mints with the stored key and the real spec, then performs the phone's
-/// exact WSS handshake (Constrained endpoint + access_token + setup frame) and a text
-/// turn. If it fails, leg B retries with his say-hi envelope (clientContent), leg C with
-/// his exact hold-to-ask wire flow (a synthesized tone standing in for the mic), leg D
-/// on the alternate endpoint spelling. Server closes are reported with their code and
-/// reason — never swallowed (v0.3.0 turned a close frame into JsonReaderException ""
-/// and hid the server's actual complaint). Every step lands in the log; the last state
-/// shows as a caption.
+/// click. Leg A — first, because it's the path that matters — performs the phone's exact
+/// hold-to-ask wire flow: the WSS handshake (Constrained endpoint + access_token + setup
+/// frame), then activityStart, two tone chunks in place of the mic, activityEnd. If that
+/// leg is green, a phone holding a token will talk. Leg B retries with his say-hi
+/// envelope (clientContent — also the context-replay shape), leg C on the alternate
+/// endpoint spelling. (v0.3.2's first leg — text inside realtimeInput — is gone:
+/// gemini-3.8-live rejects that envelope outright with close 1007 "Precondition check
+/// failed", so it always failed and masked the real audio path, which never got run.)
+/// Server closes are reported with their code and reason — never swallowed (v0.3.0
+/// turned a close frame into JsonReaderException "" and hid the server's actual
+/// complaint). Every step lands in the log; the last state shows as a caption.
 /// </summary>
 public sealed class GeminiSelfTest
 {
@@ -124,18 +127,31 @@ public sealed class GeminiSelfTest
             }
         }
 
-        // 2. Leg A — the docs' text envelope (what v0.3.0 sent; now the close reason
-        //    survives instead of dying as JsonReaderException).
-        progress?.Invoke("Gemini test: leg A — text turn");
+        // 2. Leg A — his exact hold-to-ask wire flow: activityStart, two tone chunks
+        //    in place of the mic, activityEnd. The path the phone actually uses; if it
+        //    is green, a phone holding a token will talk. Runs FIRST so a working
+        //    text path can never mask it again (v0.3.2's leg order did exactly that).
+        progress?.Invoke("Gemini test: leg A — his ask flow");
         var legA = await TrySessionAsync(RealtimeSpec.ConstrainedEndpoint, token, model,
-            "A, text turn (realtimeInput), primary endpoint",
-            new[] { ActivityStart, TextTurnRealtime(Ask), ActivityEnd }, 0).ConfigureAwait(false);
+            "A, audio turn (his exact ask flow), primary endpoint",
+            new[]
+            {
+                ActivityStart,
+                AudioFrame(ToneBase64(0.6, 440)),
+                AudioFrame(ToneBase64(0.6, 587)),
+                ActivityEnd,
+            }, 150).ConfigureAwait(false);
         lines.AddRange(legA.Lines);
-        if (legA.Ok) return string.Join('\n', lines);
+        if (legA.Ok)
+        {
+            lines.Add("his exact ask flow works — a phone with a token will talk.");
+            return string.Join('\n', lines);
+        }
 
-        // Legs B–D each need their own token (minted tokens are single-use).
+        // Legs B–C each need their own token (minted tokens are single-use).
 
-        // 3. Leg B — his say-hi envelope: a clientContent text turn.
+        // 3. Leg B — his say-hi envelope: a clientContent text turn (also the
+        //    context-replay shape after a reconnect).
         var freshB = await MintForLegAsync(key, minimal, lines).ConfigureAwait(false);
         if (freshB is null) return string.Join('\n', lines);
         progress?.Invoke("Gemini test: leg B — say-hi envelope");
@@ -145,35 +161,18 @@ public sealed class GeminiSelfTest
         lines.AddRange(legB.Lines);
         if (legB.Ok) return string.Join('\n', lines);
 
-        // 4. Leg C — his exact hold-to-ask wire flow: activityStart, two tone chunks in
-        //    place of the mic, activityEnd.
+        // 4. Leg C — the alternate endpoint spelling, in case the primary route itself
+        //    is the problem.
         var freshC = await MintForLegAsync(key, minimal, lines).ConfigureAwait(false);
         if (freshC is null) return string.Join('\n', lines);
-        progress?.Invoke("Gemini test: leg C — audio ask flow");
-        var legC = await TrySessionAsync(RealtimeSpec.ConstrainedEndpoint, freshC.Value.Token, freshC.Value.Model,
-            "C, audio turn (his ask flow), primary endpoint",
-            new[]
-            {
-                ActivityStart,
-                AudioFrame(ToneBase64(0.6, 440)),
-                AudioFrame(ToneBase64(0.6, 587)),
-                ActivityEnd,
-            }, 150).ConfigureAwait(false);
-        lines.AddRange(legC.Lines);
-        if (legC.Ok) return string.Join('\n', lines);
-
-        // 5. Leg D — the alternate endpoint spelling, in case the primary route itself
-        //    is the problem.
-        var freshD = await MintForLegAsync(key, minimal, lines).ConfigureAwait(false);
-        if (freshD is null) return string.Join('\n', lines);
-        progress?.Invoke("Gemini test: leg D — alternate endpoint");
-        var legD = await TrySessionAsync(RealtimeSpec.ConstrainedEndpointAlternate, freshD.Value.Token, freshD.Value.Model,
-            "D, text turn (clientContent), alternate endpoint",
+        progress?.Invoke("Gemini test: leg C — alternate endpoint");
+        var legC = await TrySessionAsync(RealtimeSpec.ConstrainedEndpointAlternate, freshC.Value.Token, freshC.Value.Model,
+            "C, text turn (clientContent), alternate endpoint",
             new[] { TextTurnClientContent(Ask) }, 0).ConfigureAwait(false);
-        lines.AddRange(legD.Lines);
-        if (!legD.Ok)
+        lines.AddRange(legC.Lines);
+        if (!legC.Ok)
         {
-            lines.Add("All four legs failed — copy this report into the chat with the log.");
+            lines.Add("All three legs failed — copy this report into the chat with the log.");
         }
         return string.Join('\n', lines);
     }
@@ -443,9 +442,6 @@ public sealed class GeminiSelfTest
         }
         return Convert.ToBase64String(bytes);
     }
-
-    private static string TextTurnRealtime(string text) =>
-        new JsonObject { ["realtimeInput"] = new JsonObject { ["text"] = text } }.ToJsonString();
 
     private static string TextTurnClientContent(string text) => new JsonObject
     {

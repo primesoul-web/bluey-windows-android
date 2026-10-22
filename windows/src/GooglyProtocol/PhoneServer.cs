@@ -207,6 +207,7 @@ public sealed class PhoneServer : IDisposable
                     live.Name = name;
             }
             RaisePhonesChanged();
+            return; // a hello carries nothing else in practice
         }
 
         if (packet.Command is not null)
@@ -220,7 +221,34 @@ public sealed class PhoneServer : IDisposable
             catch { /* diagnostics must never break the server */ }
             try { RequestReceived?.Invoke(packet, reply => SendTo(client, reply)); }
             catch { /* handler errors must not kill the connection */ }
+            return;
         }
+
+        if (packet.Face is not null) return; // the face stream never logs (volume)
+
+        // Forensic completeness (v0.3.3): anything else a phone sends — a reply-shaped
+        // packet, a callID with no command, a stray caption — is logged, never silently
+        // dropped. The month-long "the token request vanished" hunt was blind to exactly
+        // this class of packet: if it doesn't carry a Command it was invisible.
+        try { Log?.Invoke($"phone #{client.Id} sent a packet with no command ({Describe(packet)}) — ignored"); }
+        catch { /* diagnostics must never break the server */ }
+    }
+
+    /// <summary>The set fields of an odd packet, for the forensic log line.</summary>
+    private static string Describe(Packet p)
+    {
+        var shape = new List<string>();
+        if (p.Hello is not null) shape.Add("hello"); // unreachable here; kept for safety
+        if (p.CallID is not null) shape.Add("callID");
+        if (p.Tool is not null) shape.Add("tool");
+        if (p.Text is not null) shape.Add($"text({p.Text.Length})");
+        if (p.Audio is not null) shape.Add("audio");
+        if (p.Image is not null) shape.Add("image");
+        if (p.Model is not null) shape.Add("model");
+        if (p.Error is not null) shape.Add("error");
+        if (p.Speech is not null) shape.Add("speech");
+        if (p.Volume is not null) shape.Add("volume");
+        return shape.Count == 0 ? "empty" : string.Join("+", shape);
     }
 
     /// <summary>Sends a command to every phone (e.g. "wake", "sleep").</summary>

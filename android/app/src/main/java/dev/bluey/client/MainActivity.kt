@@ -61,6 +61,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 
 class MainActivity : ComponentActivity() {
@@ -132,16 +135,12 @@ class MainActivity : ComponentActivity() {
         animator.localTalk = { live.level }
 
         live.requestToken = { done ->
-            if (!link.connected.value) {
-                done(null, null, LiveVoice.NO_PC)
-            } else {
-                link.request(Packet(command = "realtimeToken")) { reply ->
-                    when {
-                        reply?.text != null -> done(reply.text, reply.model, null)
-                        reply?.error != null -> done(null, null, reply.error)
-                        link.connected.value -> done(null, null, null) // mint failed without a reason
-                        else -> done(null, null, LiveVoice.NO_PC)      // the PC went away mid-request
-                    }
+            appScope.launch {
+                val reply = obtainToken()
+                when {
+                    reply?.text != null -> done(reply.text, reply.model, null)
+                    reply?.error != null -> done(null, null, reply.error)
+                    else -> done(null, null, LiveVoice.NO_PC)
                 }
             }
         }
@@ -192,6 +191,40 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    /** Asks the PC for a live token with the patience a flaky Wi-Fi link needs
+     * (v0.3.3). The whole budget stays inside LiveVoice's 20-second wake watchdog:
+     * wait briefly for a link that may still be landing (fresh from the background),
+     * ask with a 6-second reply timeout, and if the PC stays silent on a link that
+     * claims to be up — the phone→PC black hole seen on 2026-10-22, where faces kept
+     * flowing but the token request never reached the PC — kill that zombie link,
+     * reconnect and ask once more on the fresh, handshake-verified connection. */
+    private suspend fun obtainToken(): Packet? {
+        awaitLink(2_500)
+        var reply = askPcForToken()
+        if (reply == null) {
+            link.forceReconnect()
+            if (awaitLink(3_500)) reply = askPcForToken()
+        }
+        return reply
+    }
+
+    /** Waits up to `timeoutMs` for the PC link to report connected. */
+    private suspend fun awaitLink(timeoutMs: Long): Boolean =
+        withTimeoutOrNull(timeoutMs) {
+            link.connected.first { it }
+            true
+        } ?: false
+
+    /** One realtimeToken request, null when the PC didn't answer in time. The
+     * continuation and the reply callback both live on the main dispatcher, so the
+     * isActive check makes a late reply after cancellation a quiet no-op. */
+    private suspend fun askPcForToken(): Packet? =
+        suspendCancellableCoroutine { cont ->
+            link.request(Packet(command = "realtimeToken"), timeoutMs = 6_000) { reply ->
+                if (cont.isActive) cont.resumeWith(Result.success(reply))
+            }
+        }
 
     private fun prefsVolume(): LiveVoice.VolumePersistence {
         val prefs = getSharedPreferences("bluey", MODE_PRIVATE)

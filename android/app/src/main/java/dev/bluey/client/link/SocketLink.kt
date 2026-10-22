@@ -66,7 +66,14 @@ class SocketLink(
                 out.write(bytes)
                 out.flush()
             } catch (_: Exception) {
-                // a dead socket is noticed by the read loop; writes just fail quietly
+                // A write that throws means the socket is locally dead — tear the link
+                // down now so the retry loop replaces it. Swallowing this (v0.3.2 and
+                // earlier) let requests queue into a black hole while `connected` still
+                // said true, which surfaced only as a vague 20-second timeout on the
+                // phone (found in the wild 2026-10-22).
+                try { s.close() } catch (_: Exception) { /* already gone */ }
+                close()
+                return
             }
         }
     }
