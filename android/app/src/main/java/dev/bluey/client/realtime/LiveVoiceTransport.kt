@@ -5,6 +5,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
@@ -50,6 +51,18 @@ class OkHttpTransport(
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onMessage(webSocket: WebSocket, text: String) = onEvent(text).let { }
 
+            // The Live API server delivers its JSON as BINARY frames (found on the wire
+            // 2026-10-22 and corroborated by other Live integrations: "a client matching
+            // only text frames has setup accepted and then hears nothing" — exactly our
+            // 20-second hold-to-ask timeout). Decode them as UTF-8 and route anything that
+            // is a JSON object to the same handler; the model's audio also arrives as
+            // binary and is dropped — he only ever speaks in transcriptions.
+            // (okio.ByteString is what okhttp3.ByteString aliases to on the JVM; K2 in this
+            // toolchain can't see through the KMP typealias import.)
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                binaryFrameAsJson(bytes.toByteArray())?.let(onEvent)
+            }
+
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = onClosed().let { }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = onClosed().let { }
@@ -61,5 +74,16 @@ class OkHttpTransport(
     override fun close() {
         socket?.close(1000, null)
         socket = null
+    }
+
+    companion object {
+        /** A binary frame decoded as JSON text, or null when the bytes aren't a JSON
+         * object (the model's audio). Exposed for unit tests; brace-flanked audio noise
+         * that slips through is dropped safely by RealtimeEvents.parse's Ignored path. */
+        internal fun binaryFrameAsJson(bytes: ByteArray): String? {
+            if (bytes.size < 2) return null
+            val text = bytes.decodeToString().trim()
+            return if (text.startsWith("{") && text.endsWith("}")) text else null
+        }
     }
 }

@@ -223,9 +223,14 @@ public sealed class GeminiSelfTest
                 lines.Add($"  handshake FAILED — {first.CloseInfo}{FriendlyClose(first.CloseInfo)}");
                 return (false, lines);
             }
-            if (first.Binary)
+            // The Live API delivers its JSON as BINARY frames (found on the wire
+            // 2026-10-22) — a text-only reader sees "first frame was binary" and the
+            // session looks dead while the server is talking the whole time. Decode
+            // either frame type as UTF-8 and accept anything brace-flanked.
+            if (!LiveWire.IsJsonObject(first.Json))
             {
-                lines.Add($"  handshake FAILED — first frame was binary ({first.Length} bytes)");
+                lines.Add($"  handshake FAILED — first frame wasn't JSON " +
+                    $"({(first.Binary ? "binary" : "text")}, {first.Length} bytes): {first.Hex}");
                 return (false, lines);
             }
             if (!first.Json.Contains("setupComplete"))
@@ -233,7 +238,7 @@ public sealed class GeminiSelfTest
                 lines.Add($"  handshake FAILED — first frame: {Brief(first.Json)}");
                 return (false, lines);
             }
-            lines.Add($"  handshake OK (setupComplete): {Brief(first.Json)}");
+            lines.Add($"  handshake OK (setupComplete{(first.Binary ? ", as a binary frame" : "")}): {Brief(first.Json)}");
 
             for (var i = 0; i < turnFrames.Length; i++)
             {
@@ -246,6 +251,7 @@ public sealed class GeminiSelfTest
             var said = "";
             string last = first.Json;
             var notedBinary = false;
+            var notedBinaryJson = false;
             var notedEmpty = false;
             var notedNonJson = false;
             while (sw.Elapsed < TimeSpan.FromSeconds(20))
@@ -262,15 +268,26 @@ public sealed class GeminiSelfTest
                 }
                 if (frame.Binary)
                 {
-                    // Model audio arrives this way on some API versions — the phone's
-                    // OkHttp transport drops binary frames, so this note matters there too.
-                    if (!notedBinary)
+                    // Binary frames carry the server's JSON (2026-10-22): decode and
+                    // parse anything brace-flanked through the same path as text. The
+                    // model's audio is binary too and fails the brace check — it drops
+                    // (Bluey speaks in transcriptions), hex-noted once for the log.
+                    if (!LiveWire.IsJsonObject(frame.Json))
                     {
-                        notedBinary = true;
-                        lines.Add($"  note: binary frames arriving (last {frame.Length} bytes) — model audio, not JSON");
+                        if (!notedBinary)
+                        {
+                            notedBinary = true;
+                            lines.Add($"  note: binary frames that aren't JSON — model audio (last {frame.Length} bytes): {frame.Hex}");
+                        }
+                        last = "(binary audio frame)";
+                        continue;
                     }
-                    last = "(binary frame)";
-                    continue;
+                    if (!notedBinaryJson)
+                    {
+                        notedBinaryJson = true;
+                        lines.Add($"  note: server JSON arriving as binary frames ({frame.Length} bytes) — decoded as UTF-8");
+                    }
+                    // fall through: parse it below like any text frame
                 }
                 if (string.IsNullOrWhiteSpace(frame.Json))
                 {
@@ -350,12 +367,16 @@ public sealed class GeminiSelfTest
     /// <summary>One whole message. Close frames are checked FIRST — a close always
     /// carries EndOfMessage=true and zero bytes, so v0.3.0's EndOfMessage-first loop
     /// turned them into an empty string that JsonNode.Parse choked on, hiding the
-    /// server's actual close reason (the bug this version exists to fix).</summary>
+    /// server's actual close reason (the bug this version exists to fix). The payload
+    /// is ALWAYS decoded as UTF-8, binary or text — the Live API sends its JSON as
+    /// binary frames, so a binary message's bytes are the JSON text. The first bytes
+    /// also ride along as hex so a non-JSON frame is shown, never discarded.</summary>
     private static async Task<Frame> ReceiveMessageAsync(ClientWebSocket ws, TimeSpan timeout)
     {
         using var cts = new CancellationTokenSource(timeout);
         var buffer = new byte[256 * 1024];
         var builder = new StringBuilder();
+        var hex = new StringBuilder();
         var binary = false;
         var length = 0;
         try
@@ -364,17 +385,19 @@ public sealed class GeminiSelfTest
             {
                 var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token).ConfigureAwait(false);
                 if (result.MessageType == WebSocketMessageType.Close)
-                    return new Frame(false, "", CloseDescription(result), false, 0);
+                    return new Frame(false, "", CloseDescription(result), false, 0, "");
                 if (result.MessageType == WebSocketMessageType.Binary) binary = true;
                 length += result.Count;
-                if (!binary) builder.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+                builder.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+                for (var i = 0; i < result.Count && hex.Length < 96; i++)
+                    hex.Append(buffer[i].ToString("x2")).Append(' ');
                 if (result.EndOfMessage) break;
             }
-            return new Frame(true, builder.ToString(), "", binary, length);
+            return new Frame(true, builder.ToString(), "", binary, length, hex.ToString().TrimEnd());
         }
         catch (OperationCanceledException)
         {
-            return new Frame(false, "", "timeout waiting for a frame", false, 0);
+            return new Frame(false, "", "timeout waiting for a frame", false, 0, "");
         }
     }
 
@@ -477,6 +500,8 @@ public sealed class GeminiSelfTest
     }
 
     /// <summary>One received WebSocket message, with the info the caller needs to
-    /// survive every frame shape the server sends.</summary>
-    private readonly record struct Frame(bool Ok, string Json, string CloseInfo, bool Binary, int Length);
+    /// survive every frame shape the server sends. [Hex] is the first bytes spelled
+    /// out, for frames that aren't JSON — nothing the server sends is ever thrown
+    /// away unnamed again.</summary>
+    private readonly record struct Frame(bool Ok, string Json, string CloseInfo, bool Binary, int Length, string Hex);
 }
