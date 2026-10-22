@@ -30,7 +30,7 @@ jobs:
           pip install jsonschema==4.23.0
           python3 scripts/validate-fixtures.py
 
-      - name: .NET protocol tests (codec, throttle, framer, server)
+      - name: .NET protocol tests (codec, throttle, framer, server, LiveWire)
         run: dotnet test windows/tests/GooglyProtocol.Tests/GooglyProtocol.Tests.csproj --logger "console;verbosity=normal"
 
   windows:
@@ -45,14 +45,34 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Build (publish)
-        run: dotnet publish windows/src/GooglyWindows/GooglyWindows.csproj -c Release -r win-x64 --self-contained false -o artifacts/windows
+      # Build A — framework-dependent folder (small; needs the .NET 10 Desktop
+      # Runtime; the profile proven to run on the user's PC).
+      - name: Build (framework-dependent)
+        run: dotnet publish windows/src/GooglyWindows/GooglyWindows.csproj -c Release -r win-x64 --self-contained false -o artifacts/framework
 
-      - name: Upload artifact
+      # Build B — self-contained single-file (no runtime needed; Windows-built,
+      # unlike the Linux cross-build that SmartScreen/AV flag).
+      - name: Build (self-contained single file)
+        run: dotnet publish windows/src/GooglyWindows/GooglyWindows.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/selfcontained
+
+      - name: Zip both builds
+        shell: pwsh
+        run: |
+          Compress-Archive -Path artifacts/framework/* -DestinationPath artifacts/Bluey-windows-framework.zip
+          Compress-Archive -Path artifacts/selfcontained/* -DestinationPath artifacts/Bluey-windows-selfcontained.zip
+
+      - name: Upload artifact (framework)
         uses: actions/upload-artifact@v4
         with:
-          name: bluey-windows-exe
-          path: artifacts/windows/
+          name: bluey-windows-framework
+          path: artifacts/Bluey-windows-framework.zip
+          if-no-files-found: error
+
+      - name: Upload artifact (self-contained)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bluey-windows-selfcontained
+          path: artifacts/Bluey-windows-selfcontained.zip
           if-no-files-found: error
 
   android:
@@ -78,7 +98,7 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Unit tests (codec, framer, dispatcher, socket)
+      - name: Unit tests (codec, framer, dispatcher, socket, binary frames)
         working-directory: android
         run: gradle :app:testDebugUnitTest --no-daemon
 
