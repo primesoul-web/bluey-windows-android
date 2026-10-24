@@ -388,3 +388,41 @@ on top of the existing suites.
 Deliverables remain CI-artifacts-only (sandbox exes don't run on the user's
 PC). The user should also avoid running both PC apps at once while testing,
 though the phone now survives even that.
+
+## M2.12 — the coin flip that never flipped (0.3.5, 2026-10-25)
+
+Symptom after 0.3.4 hit real hardware: "the phone isn't disconnecting
+anymore — it isn't even connecting." With greeting verification in place,
+ANY TCP connection that reaches our PC becomes a verified link (the server
+greets `{hello: hostname}` unconditionally on accept), so the phone's
+connections weren't reaching our PC at all. Three candidates, all producing
+exactly that symptom:
+
+- **The lockout (fixed).** Both PC apps still running, and Android's
+  NsdManager kept resolving the shared `_googly._tcp` name to the impostor.
+  0.3.4 could only refuse it — blacklist, retry, resolve the impostor again.
+  The coin flip never flipped, and a fresh install has no sticky address to
+  fall back on. Fix: stop treating mDNS as the only candidate. A resolved
+  instance without our `go=pc` TXT marker is the other fork — and the other
+  fork runs on the SAME HOST as our PC, so the phone now dials our default
+  port (51826) on that host directly, both after a marker-less resolve and
+  immediately after a "not-ours" greeting rejection (a dial beats a 250 ms
+  timer). First attempt lands on our PC either way; the sticky address then
+  locks it in.
+- **The silent blacklist self-own (fixed).** A "silent" peer (no greeting
+  within 1.5 s) was blacklisted for 5 minutes just like a proven impostor —
+  but our own PC can be briefly late to greet (busy instant, GC, Wi-Fi),
+  which would lock the phone out of its own PC. Silent now only drops a
+  matching sticky address; "not-ours" (deterministic: a `command` greeting)
+  is the only blacklisting rejection.
+- **The invisible advertiser (made visible).** PhoneServer swallows
+  exceptions thrown by `Started` handlers, so a dead mDNS advertiser used
+  to leave the app running but undiscoverable, silently. The app now logs
+  "advertising FAILED (...)" with the exception, plus a firewall hint line:
+  a new exe folder is a new app to Windows Firewall, and blocked inbound
+  also presents as "phone never connects" (log shows advertising, zero
+  phone connects — that one is a 2-minute firewall allow, no code needed).
+
+- Versions: Windows 0.3.5, Android versionCode 5 / 0.3.5.
+- Tests: +10 Android (ImpostorPolicy — marker detection, resolve routing,
+  alternate-port-after-rejection), existing suites unchanged.

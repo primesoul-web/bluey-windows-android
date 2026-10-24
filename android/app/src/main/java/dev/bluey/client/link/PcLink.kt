@@ -29,7 +29,13 @@ import kotlinx.coroutines.launch
  *    counts as connected, a verified address is remembered and tried first, and
  *    addresses that greet in the other fork's voice are blacklisted for a while —
  *    the "connected to the wrong Bluey" churn of 2026-10-24, where two PC apps
- *    shared one `_googly._tcp` name and mDNS handed them out like a coin flip.
+ *    shared one `_googly._tcp` name and mDNS handed them out like a coin flip;
+ *  - port addition (v0.3.5): the coin flip is gone — a resolved instance without
+ *    our TXT marker is the other fork, and since both apps run on the same host,
+ *    the phone dials our default port there directly (and again right after a
+ *    "not-ours" rejection). Verification-day follow-up to "not even connecting",
+ *    where the resolver kept handing back the impostor and the blacklist could
+ *    only refuse it, never route around it.
  */
 class PcLink(private val context: Context) {
 
@@ -84,6 +90,12 @@ class PcLink(private val context: Context) {
     /** True when the last link loss was a greeting rejection — retry fast (v0.3.4):
      * a wrong-PC rejection shouldn't cost the same 1.5 s as a dead network. */
     @Volatile private var fastRetry = false
+
+    /** A deterministic next try lined up by a "not-ours" rejection (v0.3.5): our
+     * default port on the same host. Set in [connect]'s onRejected, consumed by
+     * [onLinkLost], which always runs right after — a dial beats a timer when the
+     * impostor and our PC share a machine. */
+    private var pendingAlternate: Pair<String, Int>? = null
 
     fun start() {
         stopping = false
@@ -281,7 +293,14 @@ class PcLink(private val context: Context) {
             override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
                 if (generation != resolveGeneration) return
                 val host = serviceInfo.host?.hostAddress ?: return scheduleRetry()
-                connect(host, serviceInfo.port)
+                // v0.3.5: a resolved instance without our TXT marker is the other
+                // fork (same service name, their port). Both apps live on the same
+                // host, so dial our default port there instead of the impostor —
+                // mDNS stops being a coin flip our connection depends on. A
+                // marker-carrying (or default-port) instance is dialed as resolved.
+                val port = ImpostorPolicy.portAfterResolve(
+                    ImpostorPolicy.hasOurMarker(serviceInfo.attributes), serviceInfo.port)
+                connect(host, port)
             }
         }
         try {
@@ -323,11 +342,25 @@ class PcLink(private val context: Context) {
                 startWatchdog()
             }
         }
-        l.onRejected = { _ ->
+        l.onRejected = { reason ->
             if (link === l) {
-                blacklist.remember(address)
-                if (verifiedAddress?.endsWith("@$address") == true) forgetVerified()
-                fastRetry = true
+                if (reason == SocketLink.REASON_NOT_OURS) {
+                    // Greeted in the other fork's voice. Blacklist it, and line up
+                    // our default port on the same host as the immediate next try
+                    // (v0.3.5) — the regular 250 ms retry can only re-resolve the
+                    // name, which is exactly the coin flip that never flipped.
+                    blacklist.remember(address)
+                    if (verifiedAddress?.endsWith("@$address") == true) forgetVerified()
+                    fastRetry = true
+                    pendingAlternate = ImpostorPolicy.alternateAfterRejection(port)?.let { host to it }
+                } else {
+                    // Silent peer — could be our own PC late to greet (busy instant,
+                    // GC pause, flaky Wi-Fi). Blacklisting our own PC for five
+                    // minutes over that locked the phone out entirely (2026-10-25),
+                    // so don't. Just drop a matching sticky address; discovery and
+                    // the greeting check sort the rest out on the next attempt.
+                    if (verifiedAddress?.endsWith("@$address") == true) forgetVerified()
+                }
             }
         }
         l.onPacket = { packet -> handlePacket(packet) }
@@ -356,6 +389,14 @@ class PcLink(private val context: Context) {
         target.value = null
         watchdogJob?.cancel()
         dispatcher.failAll()
+        val alternate = pendingAlternate
+        pendingAlternate = null
+        if (alternate != null) {
+            // v0.3.5: dial the deterministic alternate right away instead of
+            // waiting out a retry timer.
+            connect(alternate.first, alternate.second)
+            return
+        }
         scheduleRetry()
     }
     /**

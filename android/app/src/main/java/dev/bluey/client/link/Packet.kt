@@ -14,6 +14,13 @@ object GooglyService {
      * can't see across a USB-tethering link, so a well-known port is what makes
      * typed addresses and `adb reverse` work. */
     const val DEFAULT_PORT = 51826
+
+    /** The TXT marker our PC advertises (v0.3.5): `go=pc`. The other Bluey fork
+     * on this Wi-Fi advertises under the same service NAME without it, so a
+     * resolved instance carrying the marker is definitely ours. See
+     * [ImpostorPolicy] — the greeting check remains the hard guarantee. */
+    const val MARKER_KEY = "go"
+    const val MARKER_VALUE = "pc"
 }
 
 /** A PC address typed by hand — "192.168.42.196" or "192.168.42.196:51826".

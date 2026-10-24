@@ -62,9 +62,22 @@ public partial class App : Application
         _server.Started += port => Dispatcher.BeginInvoke(() =>
         {
             try { _advertiser.Dispose(); } catch { /* not started yet */ }
-            _advertiser = new MdnsAdvertiser(hostName, port);
-            Log($"advertising {GooglyService.Type} as \"{hostName}\" on port {port}" +
-                (port == PhoneServer.DefaultPort ? "" : " (fixed port was taken — fell back to an ephemeral one)"));
+            try
+            {
+                _advertiser = new MdnsAdvertiser(hostName, port);
+                Log($"advertising {GooglyService.Type} as \"{hostName}\" on port {port}" +
+                    (port == PhoneServer.DefaultPort ? "" : " (fixed port was taken — fell back to an ephemeral one)") +
+                    " (TXT go=pc)");
+            }
+            catch (Exception ex)
+            {
+                // v0.3.5: PhoneServer swallows exceptions thrown by Started handlers
+                // (listeners must not break the server), so an advertiser that dies —
+                // e.g. a multicast API refusing to bind — used to vanish with the app
+                // still running, just invisible on mDNS. Say it out loud instead.
+                Log($"advertising FAILED ({ex.GetType().Name}: {ex.Message}) — the phone cannot discover this PC via mDNS; a typed PC address on the phone still works");
+            }
+            Log("if no phone ever connects: allow this app through Windows Firewall (a new folder counts as a new app), and only one Bluey PC app should run");
         });
         _server.PhonesChanged += names => Dispatcher.BeginInvoke(() =>
         {
