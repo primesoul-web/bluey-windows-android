@@ -8,5 +8,8 @@
     <Description>The Googly wire protocol: packets, framing, face throttle, and the phone-facing TCP server.</Description>
     <Copyright>Public domain (Unlicense). Original by rbrown101010.</Copyright>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Makaretu.Dns.Multicast" Version="0.27.0" />
+  </ItemGroup>
 
 </Project>

@@ -194,11 +194,13 @@ class MainActivity : ComponentActivity() {
 
     /** Asks the PC for a live token with the patience a flaky Wi-Fi link needs
      * (v0.3.3). The whole budget stays inside LiveVoice's 20-second wake watchdog:
-     * wait briefly for a link that may still be landing (fresh from the background),
-     * ask with a 6-second reply timeout, and if the PC stays silent on a link that
-     * claims to be up — the phone→PC black hole seen on 2026-10-22, where faces kept
-     * flowing but the token request never reached the PC — kill that zombie link,
-     * reconnect and ask once more on the fresh, handshake-verified connection. */
+     * wait briefly for a link that may still be landing (fresh from the background,
+     * and since v0.3.4 also passing greeting verification — our PC answers with a
+     * hello field, the other Bluey fork with a command, so links to it are rejected
+     * and blacklisted instead of silently swallowing requests), ask with a 6-second
+     * reply timeout, and if the PC stays silent on a link that claims to be up —
+     * kill that zombie link, reconnect and ask once more on the fresh, verified
+     * connection. */
     private suspend fun obtainToken(): Packet? {
         awaitLink(2_500)
         var reply = askPcForToken()

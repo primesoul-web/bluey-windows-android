@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using System.Net.WebSockets;
 using System.Text;
@@ -14,12 +15,14 @@ namespace GooglyWindows;
 /// live session with no phone involved, mapping exactly which leg is broken in one tray
 /// click. Leg A — first, because it's the path that matters — performs the phone's exact
 /// hold-to-ask wire flow: the WSS handshake (Constrained endpoint + access_token + setup
-/// frame), then activityStart, two tone chunks in place of the mic, activityEnd. If that
-/// leg is green, a phone holding a token will talk. Leg B retries with his say-hi
-/// envelope (clientContent — also the context-replay shape), leg C on the alternate
-/// endpoint spelling. (v0.3.2's first leg — text inside realtimeInput — is gone:
-/// gemini-3.8-live rejects that envelope outright with close 1007 "Precondition check
-/// failed", so it always failed and masked the real audio path, which never got run.)
+/// frame), then activityStart, the spoken ask in the phone's exact 150 ms chunks (real
+/// speech from Windows TTS since v0.3.4 — pure tones made the model stay silent, so the
+/// tone stand-in lied about the audio path), activityEnd. If that leg is green, a phone
+/// holding a token will talk. Leg B retries with his say-hi envelope (clientContent —
+/// also the context-replay shape), leg C on the alternate endpoint spelling. (v0.3.2's
+/// first leg — text inside realtimeInput — is gone: gemini-3.8-live rejects that
+/// envelope outright with close 1007 "Precondition check failed", so it always failed
+/// and masked the real audio path, which never got run.)
 /// Server closes are reported with their code and reason — never swallowed (v0.3.0
 /// turned a close frame into JsonReaderException "" and hid the server's actual
 /// complaint). Every step lands in the log; the last state shows as a caption.
@@ -37,6 +40,7 @@ public sealed class GeminiSelfTest
     private DispatcherTimer? _clearTimer;
 
     private const string Ask = "Say hello in exactly five words.";
+    private const string AskSpoken = "Hello Bluey, how are you today?";
     private const string ActivityStart = """{"realtimeInput":{"activityStart":{}}}""";
     private const string ActivityEnd = """{"realtimeInput":{"activityEnd":{}}}""";
 
@@ -127,21 +131,22 @@ public sealed class GeminiSelfTest
             }
         }
 
-        // 2. Leg A — his exact hold-to-ask wire flow: activityStart, two tone chunks
-        //    in place of the mic, activityEnd. The path the phone actually uses; if it
-        //    is green, a phone holding a token will talk. Runs FIRST so a working
-        //    text path can never mask it again (v0.3.2's leg order did exactly that).
+        // 2. Leg A — his exact hold-to-ask wire flow: activityStart, the spoken ask
+        //    in place of the mic (150 ms chunks, exactly the phone's), activityEnd.
+        //    The path the phone actually uses; if it is green, a phone holding a
+        //    token will talk. Runs FIRST so a working text path can never mask it
+        //    again (v0.3.2's leg order did exactly that).
         progress?.Invoke("Gemini test: leg A — his ask flow");
+        var (askPcm, audioKind) = AskAudioPcm16();
+        var audioFrames = LiveAudio.Base64Frames(askPcm)
+            .Select(AudioFrame)
+            .ToArray();
         var legA = await TrySessionAsync(RealtimeSpec.ConstrainedEndpoint, token, model,
             "A, audio turn (his exact ask flow), primary endpoint",
-            new[]
-            {
-                ActivityStart,
-                AudioFrame(ToneBase64(0.6, 440)),
-                AudioFrame(ToneBase64(0.6, 587)),
-                ActivityEnd,
-            }, 150).ConfigureAwait(false);
+            new[] { ActivityStart }.Concat(audioFrames).Append(ActivityEnd).ToArray(), 150)
+            .ConfigureAwait(false);
         lines.AddRange(legA.Lines);
+        lines.Add($"  ask audio: {audioKind}");
         if (legA.Ok)
         {
             lines.Add("his exact ask flow works — a phone with a token will talk.");
@@ -426,9 +431,39 @@ public sealed class GeminiSelfTest
         return "";
     }
 
-    /// <summary>A short soft tone as little-endian PCM16 at 16 kHz, base64 — stands in
-    /// for the mic in leg C (the phone's exact ask flow, minus a microphone).</summary>
-    private static string ToneBase64(double seconds, double frequency, int rate = 16000)
+    /// <summary>Leg A's stand-in for the mic (v0.3.4): real spoken audio when Windows
+    /// has a TTS voice (SAPI, built into every Win10/11), the old soft tones when it
+    /// doesn't. Found 2026-10-24: gemini-3.8-live answers spoken audio but stays
+    /// silent for pure tones — the tone stand-in made leg A look broken while the
+    /// audio path was fine (the server's VAD even measured the tones' exact 1.2 s,
+    /// then the model had nothing to say). The report says which audio was used so a
+    /// tone-fallback result is never read as a clean pass/fail of the speech path.</summary>
+    private static (byte[] Pcm16, string Kind) AskAudioPcm16()
+    {
+        try
+        {
+            using var stream = new MemoryStream();
+            using (var synth = new System.Speech.Synthesis.SpeechSynthesizer())
+            {
+                synth.SetOutputToAudioStream(stream, new System.Speech.AudioFormat.SpeechAudioFormatInfo(
+                    16000, System.Speech.AudioFormat.AudioBitsPerSample.Sixteen,
+                    System.Speech.AudioFormat.AudioChannel.Mono));
+                synth.Speak(AskSpoken);
+            }
+            if (stream.Length > 0)
+                return (stream.ToArray(), $"real speech (Windows TTS, {stream.Length / 32000.0:0.#} s)");
+        }
+        catch
+        {
+            // No voice installed / SAPI unavailable — the tone fallback below.
+        }
+        return (TonePcm16(0.6, 440).Concat(TonePcm16(0.6, 587)).ToArray(),
+            "tone fallback (no Windows TTS voice — install one for a faithful speech test)");
+    }
+
+    /// <summary>A short soft tone as little-endian PCM16 at 16 kHz — the leg A
+    /// fallback when no TTS voice exists.</summary>
+    private static byte[] TonePcm16(double seconds, double frequency, int rate = 16000)
     {
         var count = (int)(seconds * rate);
         var bytes = new byte[count * 2];
@@ -440,7 +475,7 @@ public sealed class GeminiSelfTest
             bytes[2 * i] = (byte)sample;
             bytes[2 * i + 1] = (byte)(sample >> 8);
         }
-        return Convert.ToBase64String(bytes);
+        return bytes;
     }
 
     private static string TextTurnClientContent(string text) => new JsonObject

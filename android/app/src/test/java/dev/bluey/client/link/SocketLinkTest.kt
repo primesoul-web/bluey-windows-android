@@ -89,4 +89,118 @@ class SocketLinkTest {
         assertTrue(closed)
         scope.cancel()
     }
+
+    // MARK: Greeting verification (v0.3.4) — the other-Bluey-on-the-Wi-Fi defense.
+
+    @Test
+    fun `verification accepts our PC greeting and routes what follows it`() = runBlocking {
+        val server = ServerSocket(0)
+        val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val serverJob = serverScope.launch {
+            val client = server.accept()
+            val output = client.getOutputStream()
+            // our PC greets the instant it accepts, then streams faces
+            output.write(PacketCodec.encode(Packet(hello = "DESKTOP-TEST")))
+            output.flush()
+            delay(50)
+            output.write(PacketCodec.encode(Packet(face = FaceState.create(0.0, 0.0, Mood.HAPPY, 0.0))))
+            output.flush()
+            while (true) delay(100)
+        }
+
+        val link = SocketLink("127.0.0.1", server.localPort, "Pixel 9 (test)", verifyGreeting = true)
+        var verifiedName: String? = null
+        val faces = CopyOnWriteArrayList<FaceState>()
+        val routedHello = AtomicBoolean(false)
+        link.onVerified = { name -> verifiedName = name }
+        link.onPacket = { packet ->
+            if (packet.hello != null) routedHello.set(true) // the greeting must be consumed, not routed
+            packet.face?.let { faces.add(it) }
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        link.start(scope)
+
+        withTimeout(10_000) {
+            while (verifiedName == null || faces.isEmpty()) delay(10)
+        }
+        assertEquals("DESKTOP-TEST", verifiedName)
+        assertEquals(Mood.HAPPY, faces.first().mood)
+        assertTrue("the greeting itself must not be routed as a packet", !routedHello.get())
+
+        link.close()
+        server.close()
+        serverJob.cancel()
+        serverScope.cancel()
+        scope.cancel()
+    }
+
+    @Test
+    fun `verification rejects a greeting without our hello field — the other fork`() = runBlocking {
+        val server = ServerSocket(0)
+        val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val serverJob = serverScope.launch {
+            val client = server.accept()
+            val output = client.getOutputStream()
+            // the other fork greets with a command instead of a hello field
+            output.write(PacketCodec.encode(Packet(command = "hello", text = "DESKTOP-TEST")))
+            output.flush()
+            delay(50)
+            output.write(PacketCodec.encode(Packet(face = FaceState.create(0.0, 0.0, Mood.HAPPY, 0.0))))
+            output.flush()
+            while (true) delay(100)
+        }
+
+        val link = SocketLink("127.0.0.1", server.localPort, "Pixel 9 (test)", verifyGreeting = true)
+        var rejection: String? = null
+        var closed = false
+        var anythingRouted = false
+        link.onRejected = { reason -> rejection = reason }
+        link.onPacket = { _ -> anythingRouted = true }
+        link.onClosed = { closed = true }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        link.start(scope)
+
+        withTimeout(10_000) {
+            while (!closed) delay(10)
+        }
+        assertEquals(SocketLink.REASON_NOT_OURS, rejection)
+        assertTrue("nothing from an impostor may be routed", !anythingRouted)
+
+        server.close()
+        serverJob.cancel()
+        serverScope.cancel()
+        scope.cancel()
+    }
+
+    @Test
+    fun `verification rejects a peer that stays silent`() = runBlocking {
+        val server = ServerSocket(0)
+        val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val serverJob = serverScope.launch {
+            server.accept() // accept, then say nothing — our PC never does this
+            while (true) delay(100)
+        }
+
+        val link = SocketLink("127.0.0.1", server.localPort, "Pixel 9 (test)",
+            verifyGreeting = true, greetingTimeoutMs = 300)
+        var rejection: String? = null
+        var closed = false
+        link.onRejected = { reason -> rejection = reason }
+        link.onClosed = { closed = true }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val started = System.currentTimeMillis()
+        link.start(scope)
+
+        withTimeout(10_000) {
+            while (!closed) delay(10)
+        }
+        assertEquals(SocketLink.REASON_SILENT, rejection)
+        assertTrue("the silent rejection should be prompt, not a 5 s connect timeout",
+            System.currentTimeMillis() - started < 5_000)
+
+        server.close()
+        serverJob.cancel()
+        serverScope.cancel()
+        scope.cancel()
+    }
 }

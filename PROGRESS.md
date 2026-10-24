@@ -332,3 +332,59 @@ Sandbox-built binaries remain untrustworthy on the user's PC (the 0.3.2
 sandbox exe never opened; the CI exe runs) — **deliverables are CI artifacts
 only**: `bluey-windows-framework.zip`, `bluey-windows-selfcontained.zip`,
 `bluey-android-apk`.
+
+## M2.11 — two Blueys, one Wi-Fi (v0.3.4, 2026-10-24)
+
+The 0.3.3 hardware test produced a NEW symptom — "when I click phone to
+talk it got disconnected every time from PC" — and the two test logs nailed
+both remaining problems at once.
+
+**Problem 1 — the disconnect churn (the real month-long root cause).** The
+user's other project, avatar_phone_PC_integration, is a second Bluey
+(PC + phone) that ALSO advertises `_googly._tcp` under
+`Environment.MachineName` — on their PC, the SAME service name ours uses
+("DESKTOP-NT34JG2"; ours on port 51826, theirs on 47821). Android's
+NsdManager cannot tell two same-named services apart, so every resolve is a
+coin flip between the two PC apps. Worse, their PC streams faces at 5 Hz in
+the SAME JSON shape as ours, so a wrong-PC link looks perfectly healthy to
+our phone's face watchdog — while every `realtimeToken` request we send it
+vanishes (their app doesn't know that command). Result: 6 s timeout →
+force-reconnect → coin flip again → the churn in the log (9 reconnects in
+23 s), zero requests ever reaching our PC, and the "phone→PC black hole" of
+0.3.2 explained in full — the phone was talking to the wrong Bluey.
+
+**Problem 2 — the self-test's audio leg lied.** Leg A sent pure sine tones
+as the ask. The server took them fine (its VAD measured exactly 1.2 s —
+the audio path works), but gemini-3.8-live has nothing to say to a tone and
+stays silent, so leg A "failed" while the path was healthy. Leg B (text)
+turns green, proving the session spec and transcriptions are fine.
+
+Fixes (both platforms, version 0.3.4):
+- **Phone — greeting verification.** Our PC answers a new connection with a
+  packet whose `hello` field is set (always has, since 0.3.0); the other
+  fork answers with `{"command":"hello"}`. SocketLink now verifies this
+  before the link counts as connected: greet in our voice → connected;
+  greet in theirs or stay silent past 1.5 s → reject, blacklist that
+  host:port for 5 min, retry fast (250 ms). Nothing an impostor sends is
+  ever routed.
+- **Phone — sticky verified address.** The last address that passed
+  verification is remembered and tried FIRST, before mDNS (the coin flip).
+  Dropped automatically once it stops working.
+- **PC — TXT marker.** The advertised service carries `go=pc` (new
+  AdvertisedService in GooglyProtocol, next to the service type); phones
+  that know it can skip us-not candidates at discovery. Harmless to every
+  existing resolver.
+- **PC — self-test leg A speaks.** Real speech via Windows SAPI TTS
+  ("Hello Bluey, how are you today?", 16 kHz PCM16, the phone's exact
+  150 ms chunks), tone fallback when no voice is installed — and the
+  report says which audio was used, so a tone result is never read as a
+  clean verdict on the speech path.
+- Versions: Windows 0.3.4, Android versionCode 4 / 0.3.4.
+
+Tests: +4 Android (greeting accept/reject/silent over a real localhost
+socket, HostBlacklist TTL) and +6 Windows (LiveAudio chunking, TXT marker),
+on top of the existing suites.
+
+Deliverables remain CI-artifacts-only (sandbox exes don't run on the user's
+PC). The user should also avoid running both PC apps at once while testing,
+though the phone now survives even that.

@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Bluey</AssemblyName>
     <RootNamespace>GooglyWindows</RootNamespace>
-    <Version>0.3.3</Version>
+    <Version>0.3.4</Version>
     <Product>Bluey for Windows</Product>
     <Description>Bluey host app for Windows — a port of bluey-by-riley (Unlicense).</Description>
     <Copyright>Public domain (Unlicense). Original by rbrown101010.</Copyright>
@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <PackageReference Include="Makaretu.Dns.Multicast" Version="0.27.0" />
+    <PackageReference Include="System.Speech" Version="9.0.0" />
   </ItemGroup>
 
   <ItemGroup>

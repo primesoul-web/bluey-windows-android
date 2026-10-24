@@ -24,7 +24,12 @@ import kotlinx.coroutines.launch
  *    plain sockets can't set per-socket;
  *  - an explicit stop flag replaces Swift's link-identity guard against post-stop retries;
  *  - port addition (D12): a typed PC address (USB tethering and other mDNS-blind
- *    networks) plus a loopback probe for `adb reverse tcp:51826 tcp:51826`.
+ *    networks) plus a loopback probe for `adb reverse tcp:51826 tcp:51826`;
+ *  - port addition (v0.3.4): every link must pass greeting verification before it
+ *    counts as connected, a verified address is remembered and tried first, and
+ *    addresses that greet in the other fork's voice are blacklisted for a while —
+ *    the "connected to the wrong Bluey" churn of 2026-10-24, where two PC apps
+ *    shared one `_googly._tcp` name and mDNS handed them out like a coin flip.
  */
 class PcLink(private val context: Context) {
 
@@ -67,6 +72,18 @@ class PcLink(private val context: Context) {
     @Volatile private var stopping = false
     @Volatile private var lastFaceAt = 0L
     @Volatile private var resolveGeneration = 0
+
+    /** Addresses that greeted as the other fork — not retried for a while (v0.3.4). */
+    private val blacklist = HostBlacklist()
+
+    /** "<pcName>@<host>:<port>" of the last link that passed verification — tried
+     * before mDNS, which is a coin flip between same-named services. Null once it
+     * stops working (IP changed); re-earned on the next verified connection. */
+    private var verifiedAddress: String? = prefs.getString(PREF_VERIFIED, null)
+
+    /** True when the last link loss was a greeting rejection — retry fast (v0.3.4):
+     * a wrong-PC rejection shouldn't cost the same 1.5 s as a dead network. */
+    @Volatile private var fastRetry = false
 
     fun start() {
         stopping = false
@@ -203,8 +220,10 @@ class PcLink(private val context: Context) {
     private fun scheduleRetry() {
         if (stopping) return
         retryJob?.cancel()
+        val delayMs = if (fastRetry) 250L else 1_500L
+        fastRetry = false
         retryJob = scope.launch {
-            delay(1500)
+            delay(delayMs)
             if (stopping) return@launch
             if (discoveryListener == null) start() else connectIfNeeded()
         }
@@ -212,6 +231,22 @@ class PcLink(private val context: Context) {
 
     private fun connectIfNeeded() {
         if (stopping || link != null) return
+        // The last address that passed verification goes first (v0.3.4): on networks
+        // where another app also claims _googly._tcp under the same name, mDNS
+        // resolution is a coin flip between the two PCs — the remembered address
+        // isn't. If it no longer works (the PC's IP changed) it's dropped after one
+        // failed attempt and discovery takes over again.
+        val sticky = verifiedAddress
+        if (sticky != null) {
+            val parsed = parseVerified(sticky)
+            if (parsed == null || blacklist.isBlocked(addressOf(parsed))) {
+                forgetVerified()
+            } else {
+                currentPc.value = parsed.first
+                connect(parsed.second.host, parsed.second.port)
+                return
+            }
+        }
         if (services.isNotEmpty()) {
             val preferred = preferredPc.value
             val name = services.keys.firstOrNull { it == preferred } ?: services.keys.first()
@@ -265,13 +300,35 @@ class PcLink(private val context: Context) {
     }
 
     private fun connect(host: String, port: Int) {
-        val l = SocketLink(host, port, deviceName())
+        val address = "$host:$port"
+        if (blacklist.isBlocked(address)) {
+            // Greeted as the other fork recently — don't waste an attempt or a
+            // greeting timeout on it; the next candidate is a fast-retry away.
+            scheduleRetry()
+            return
+        }
+        val l = SocketLink(host, port, deviceName(), verifyGreeting = true)
         link = l
-        target.value = "$host:$port"
+        target.value = address
         lastFaceAt = System.currentTimeMillis()
         l.onReady = {
-            connected.value = true
-            startWatchdog()
+            // Connected is NOT set here (v0.3.4): the peer must first greet in our
+            // protocol's voice. onVerified does the honors; onClosed cleans up.
+        }
+        l.onVerified = { greeted ->
+            if (link === l) {
+                greeted?.let { pcName.value = it }
+                rememberVerified("${pcName.value ?: currentPc.value ?: "PC"}@$address")
+                connected.value = true
+                startWatchdog()
+            }
+        }
+        l.onRejected = { _ ->
+            if (link === l) {
+                blacklist.remember(address)
+                if (verifiedAddress?.endsWith("@$address") == true) forgetVerified()
+                fastRetry = true
+            }
         }
         l.onPacket = { packet -> handlePacket(packet) }
         l.onClosed = {
@@ -301,7 +358,6 @@ class PcLink(private val context: Context) {
         dispatcher.failAll()
         scheduleRetry()
     }
-
     /**
      * The PC streams faces at >= 1 Hz while connected; ten seconds of silence means the
      * link is dead (the Android stand-in for NWConnection's 2 s keepalive).
@@ -323,8 +379,30 @@ class PcLink(private val context: Context) {
         Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
             ?: Build.MODEL
 
+    /** "<pcName>@<host>:<port>" → (pcName, host:port), or null when unparsable. */
+    private fun parseVerified(stored: String): Pair<String, ManualHost>? {
+        val at = stored.lastIndexOf('@')
+        if (at <= 0) return null
+        val name = stored.substring(0, at)
+        val host = ManualHost.parse(stored.substring(at + 1)) ?: return null
+        return name to host
+    }
+
+    private fun addressOf(parsed: Pair<String, ManualHost>): String = parsed.second.toString()
+
+    private fun rememberVerified(value: String) {
+        verifiedAddress = value
+        prefs.edit().putString(PREF_VERIFIED, value).apply()
+    }
+
+    private fun forgetVerified() {
+        verifiedAddress = null
+        prefs.edit().remove(PREF_VERIFIED).apply()
+    }
+
     private companion object {
         const val PREF_PREFERRED = "preferredPc"
         const val PREF_MANUAL = "manualPc"
+        const val PREF_VERIFIED = "verifiedPc"
     }
 }
