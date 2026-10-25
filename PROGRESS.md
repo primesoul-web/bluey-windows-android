@@ -426,3 +426,27 @@ exactly that symptom:
 - Versions: Windows 0.3.5, Android versionCode 5 / 0.3.5.
 - Tests: +10 Android (ImpostorPolicy — marker detection, resolve routing,
   alternate-port-after-rejection), existing suites unchanged.
+
+## M2.14 — the wake that hung up on itself (v0.3.6, 2026-10-26)
+
+Symptom (user's 0.3.5 log.txt, the same signature as every version before
+it): every wake was followed by the phone link dropping and a burst of 3–6
+reconnects; the PC log never showed a single `phone #N -> <command>` line —
+not under 0.3.3, not under 0.3.4's greeting verification, not under 0.3.5's
+ask patience. The link was stable while idle and died exactly when the
+phone first had something to say.
+Root cause: the phone→PC sends (realtimeToken, tool, awake, asleep,
+caption…) run on the main thread — Compose UI callbacks, lifecycle, the
+LiveVoice state changes — and `SocketLink.send` wrote to the socket inline.
+Android (targetSdk 35) throws NetworkOnMainThreadException for that; the
+write's catch-all swallowed it and tore the link down, so the request died
+before a single byte left the phone. The hello at connect worked only
+because it is sent from the IO thread — which is also why the PC-side
+Gemini self-test could stay green through all of it: it never exercises
+the phone's send path.
+Fix: `SocketLink` now queues writes onto one dedicated writer thread
+(ordered, safe from any thread). Android 0.3.6 / versionCode 6 — 0.3.5
+had already shipped broken, and a second different "0.3.5" would be
+indistinguishable from it on the phone. Windows unchanged (0.3.5).
+Untested on hardware at time of writing — verify: wake → PC log shows
+`phone #N -> realtimeToken` and `mint ok`.

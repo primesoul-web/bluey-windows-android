@@ -7,6 +7,9 @@ import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * One line-protocol TCP connection to the PC — the port of LineConnection over
@@ -60,6 +63,17 @@ class SocketLink(
     private val writeLock = Any()
     @Volatile private var closed = false
 
+    /** All socket writes happen on this one thread (v0.3.5). Android forbids network I/O
+     * on the main thread (NetworkOnMainThreadException, enforced for targetSdk 35), and
+     * every request the phone makes — realtimeToken, tool, awake, caption — is sent from
+     * the main thread. The old code wrote inline, the exception was swallowed by the
+     * catch below, and the link was torn down on EVERY phone→PC send: the PC saw a
+     * disconnect right after each wake and never logged a single command. One thread
+     * also keeps packets in the order they were sent. */
+    private val writer: ExecutorService = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "bluey-link-writer").apply { isDaemon = true }
+    }
+
     /** Connects on a background thread; when it settles (either way) callbacks fire. */
     fun start(scope: CoroutineScope) {
         scope.launch(Dispatchers.IO) {
@@ -84,24 +98,29 @@ class SocketLink(
         }
     }
 
+    /** Queues a packet for the writer thread — safe to call from any thread, including
+     * the main thread. Order is preserved; a packet sent before the socket is up, or
+     * after the link closed, is dropped (as before). */
     fun send(packet: Packet) {
         val bytes = PacketCodec.encode(packet)
-        synchronized(writeLock) {
-            val s = socket ?: return
-            try {
-                val out = s.getOutputStream()
-                out.write(bytes)
-                out.flush()
-            } catch (_: Exception) {
-                // A write that throws means the socket is locally dead — tear the link
-                // down now so the retry loop replaces it. Swallowing this (v0.3.2 and
-                // earlier) let requests queue into a black hole while `connected` still
-                // said true, which surfaced only as a vague 20-second timeout on the
-                // phone (found in the wild 2026-10-22).
-                try { s.close() } catch (_: Exception) { /* already gone */ }
-                close()
-                return
-            }
+        try {
+            writer.execute { write(bytes) }
+        } catch (_: RejectedExecutionException) {
+            // the link is already closed — nothing to deliver to
+        }
+    }
+
+    private fun write(bytes: ByteArray) {
+        val s = synchronized(writeLock) { socket } ?: return
+        try {
+            val out = s.getOutputStream()
+            out.write(bytes)
+            out.flush()
+        } catch (_: Exception) {
+            // A write that throws means the socket is locally dead — tear the link
+            // down now so the retry loop replaces it (found in the wild 2026-10-22).
+            try { s.close() } catch (_: Exception) { /* already gone */ }
+            close()
         }
     }
 
@@ -110,6 +129,7 @@ class SocketLink(
         if (closed) return
         closed = true
         try { socket?.close() } catch (_: Exception) { /* already closed */ }
+        writer.shutdown() // queued writes still drain, then the thread exits
         onClosed?.invoke()
     }
 
