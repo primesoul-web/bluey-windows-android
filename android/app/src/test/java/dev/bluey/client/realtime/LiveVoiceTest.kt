@@ -193,7 +193,7 @@ class LiveVoiceTest {
     }
 
     @Test
-    fun `a wake that never gets a token gives up after twenty seconds`() = runTest {
+    fun `a wake that never gets a token gives up after thirty seconds`() = runTest {
         var sessionError: String? = null
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         val live = LiveVoice(scope = scope, makeTransport = { transport }, mic = mic, chirps = chirp).apply {
@@ -205,7 +205,7 @@ class LiveVoiceTest {
         assertEquals(1, mic.started) // the mic was already on
         assertEquals(LiveVoice.State.Waking, live.state)
 
-        advanceTimeBy(20_000)
+        advanceTimeBy(30_000)
         pump()
 
         assertTrue(sessionError!!.contains("taking too long"))

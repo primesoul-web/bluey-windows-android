@@ -193,18 +193,21 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Asks the PC for a live token with the patience a flaky Wi-Fi link needs
-     * (v0.3.3). The whole budget stays inside LiveVoice's 20-second wake watchdog:
-     * wait briefly for a link that may still be landing (fresh from the background,
-     * and since v0.3.4 also passing greeting verification — our PC answers with a
-     * hello field, the other Bluey fork with a command, so links to it are rejected
-     * and blacklisted instead of silently swallowing requests), ask with a 6-second
-     * reply timeout, and if the PC stays silent on a link that claims to be up —
-     * kill that zombie link, reconnect and ask once more on the fresh, verified
-     * connection. */
+     * (v0.3.3, reworked in v0.3.5). The whole budget stays inside LiveVoice's
+     * 30-second wake watchdog. The link may genuinely still be landing — fresh
+     * from the foreground, mDNS resolving, the sticky address dialing — so the
+     * first wait is long (8 s) instead of the old 2.5 s, which raced the connect
+     * and then "healed" it to death: forceReconnect tore down the very attempt
+     * the ask was waiting for, and the hold-to-talk failed with "can't find your
+     * PC" while the PC sat connected the whole time (2026-10-25). Forced
+     * reconnects are now reserved for the case they were built for: a link that
+     * claims healthy but swallows the request. */
     private suspend fun obtainToken(): Packet? {
-        awaitLink(2_500)
+        if (!awaitLink(8_000)) return null // a landing link gets patience, not surgery
         var reply = askPcForToken()
-        if (reply == null) {
+        if (reply == null && link.connected.value) {
+            // Healthy-looking link, swallowed request — the phone→PC black hole
+            // of 2026-10-22. A fresh, verified connection is the honest fix.
             link.forceReconnect()
             if (awaitLink(3_500)) reply = askPcForToken()
         }

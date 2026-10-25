@@ -517,8 +517,10 @@ class LiveVoice(
 
         /** How long a wake may sit in Waking before giving up with a message — a mint
          * that hung on the PC or a request that never came back (port addition; the
-         * original's fast local mints never exposed this). */
-        const val WAKE_TIMEOUT_MS = 20_000L
+         * original's fast local mints never exposed this). 30 s since v0.3.5: the
+         * ask's own patience budget (8 s landing + 6 s ask + heal + retry) must fit
+         * inside it, or the watchdog would cut a still-healing ask down. */
+        const val WAKE_TIMEOUT_MS = 30_000L
     }
 
     private fun chirp(syllables: Int) {
