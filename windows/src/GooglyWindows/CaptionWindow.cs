@@ -20,6 +20,9 @@ public sealed class CaptionWindow : Window
 {
     private const double Gw = 96.0; // design DIPs per inch (matches the Mac's point space)
 
+    /// <summary>Fixed frame around the text: cloud Margin 2×6 + Border 2×2.5 + Padding 2×24.</summary>
+    private const double Chrome = 65.0;
+
     private readonly TextBlock _text;
     private readonly Border _cloud;
 
@@ -92,30 +95,32 @@ public sealed class CaptionWindow : Window
         var width = Math.Clamp(
             Math.Sqrt(length) * 50,
             240,
-            Math.Min(580, work.Width * 0.5));
-        _text.MaxWidth = width - 24 - 24;
+            Math.Max(240, Math.Min(580, work.Width * 0.5)));
+        _text.MaxWidth = width;
 
         _text.Text = text;
 
-        // Lay the content out off-screen first so the size is known before it's placed.
-        Visibility = Visibility.Visible;
-        var size = MeasureBubble();
+        // Measure under the same finite width the final layout will use, so the wrap we
+        // measure is the wrap we render (v0.3.6). The old dance — Measure with infinite
+        // width, then Arrange + UpdateLayout — re-ran layout from the window root at the
+        // window's STALE width (NaN before the first caption ever laid out), which
+        // re-wrapped the text at ~0 px: DesiredSize came back one character wide and
+        // dozens of lines tall, Width locked to that, and every caption after rendered
+        // as a vertical letter-stack in the middle of the screen. Invisible until M2.14
+        // because no caption had ever arrived from a phone before it.
+        _cloud.Measure(new Size(width + Chrome, double.PositiveInfinity));
+        var size = _cloud.DesiredSize;
+
         Width = size.Width;
         Left = Math.Clamp(work.Left + PhonePosition * work.Width - size.Width / 2,
-            work.Left + 8, work.Right - size.Width - 8);
+            work.Left + 8, Math.Max(work.Left + 8, work.Right - size.Width - 8));
         Top = work.Bottom - size.Height - 24;
+
+        Visibility = Visibility.Visible;
         Opacity = 0;
 
         var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.12)) { EasingFunction = null };
         BeginAnimation(OpacityProperty, fadeIn);
-    }
-
-    private Size MeasureBubble()
-    {
-        _cloud.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        _cloud.Arrange(new Rect(_cloud.DesiredSize));
-        UpdateLayout();
-        return _cloud.DesiredSize;
     }
 
     private void FadeOut()

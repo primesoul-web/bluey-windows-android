@@ -216,8 +216,11 @@ public sealed class PhoneServer : IDisposable
             // face stream never carries a command, so this stays low-volume. The text
             // preview catches the phone's own error captions (e.g. its give-up message)
             // arriving here — proof the phone-to-PC direction works at that moment.
+            // Tool names join the trace since v0.3.6 (the first hardware session's
+            // look_at_screen call logged as a bare text="{}" otherwise).
+            var tool = packet.Tool is { Length: > 0 } n ? " tool=" + n : "";
             var preview = packet.Text is { Length: > 0 } t ? " text=\"" + (t.Length <= 60 ? t : t[..60] + "…") + "\"" : "";
-            try { Log?.Invoke($"phone #{client.Id} -> {packet.Command} callID={packet.CallID ?? "-"}{preview}"); }
+            try { Log?.Invoke($"phone #{client.Id} -> {packet.Command} callID={packet.CallID ?? "-"}{tool}{preview}"); }
             catch { /* diagnostics must never break the server */ }
             try { RequestReceived?.Invoke(packet, reply => SendTo(client, reply)); }
             catch { /* handler errors must not kill the connection */ }

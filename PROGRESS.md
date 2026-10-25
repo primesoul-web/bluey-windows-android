@@ -450,3 +450,38 @@ had already shipped broken, and a second different "0.3.5" would be
 indistinguishable from it on the phone. Windows unchanged (0.3.5).
 Untested on hardware at time of writing — verify: wake → PC log shows
 `phone #N -> realtimeToken` and `mint ok`.
+
+## M2.15 — the bubble that stacked its letters (v0.3.6, 2026-10-26)
+
+The first hardware session with working captions (M2.14 finally let the
+phone's sends through — log: realtimeToken, mint ok, tool calls, captions,
+zero reconnect bursts) exposed two PC-side bugs that had been invisible
+until then, because no caption had ever arrived from a phone before.
+
+- **The caption bubble rendered as a vertical letter-stack** (user's
+  screenshot: one character per line, ~1:6 tall, screen center).
+  `CaptionWindow.Show` measured its cloud with an infinite width, then
+  called `Arrange` + `UpdateLayout` — which re-ran layout from the window
+  root at the window's STALE width (NaN before the first caption ever
+  laid out). DesiredSize came back one character wide, `Width` locked to
+  it, and every caption after re-wrapped at that. Now the text is
+  measured under the exact finite constraint the final layout uses, so
+  the wrap measured is the wrap rendered; the clamp's screen bound can no
+  longer drop below its floor either.
+- **Long replies stayed on screen forever** ("it stays long and I can't
+  close it"): the captionDone hold timer ported the original's
+  `min(max(2.8, 1.2 + words·0.32), 12) + 3` with the value and lower
+  bound swapped, so `Math.Clamp(2.8, computed, 12)` threw
+  ArgumentOutOfRangeException on any reply over ~33 words and the clear
+  timer never armed. Args restored: the bubble now holds 5.8–15 s by
+  length, exactly like the Mac.
+- Tool names join the command trace (`phone #N -> tool tool=look_at_screen
+  text="{}"`) — the first hardware session's mystery `{}` call is legible
+  next time.
+
+Windows 0.3.6 (Android unchanged at 0.3.6 from M2.14). The
+chirp-instead-of-speech replies are the original's design, not a bug:
+"He never talks out loud: replies are text (speech bubbles on the Mac)
+with a little cartoon chirp here." The screen/web tool stubs answering
+"I can't see / I can't browse" are the M3/M4 stand-ins as planned — the
+tool loop itself round-tripped on hardware for the first time.

@@ -89,7 +89,12 @@ public sealed class RealtimeHost
                 var done = packet.Text ?? "";
                 if (done.Length > 0) ShowCaption(done, forSeconds: 0);
                 var words = (double)done.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
-                var readTime = Math.Clamp(2.8, 1.2 + words * 0.32, 12) + 3;
+                // The original's min(max(2.8, 1.2 + words·0.32), 12) + 3. Ported with the
+                // value and lower bound swapped (v0.3.5 and earlier): Math.Clamp(2.8,
+                // computed, 12) throws ArgumentOutOfRangeException once 1.2 + words·0.32
+                // passes 12 — any reply over ~33 words — which killed this timer arm and
+                // left the bubble up forever ("it stays long and I can't close it").
+                var readTime = Math.Clamp(1.2 + words * 0.32, 2.8, 12) + 3;
                 _readingDone?.Stop();
                 var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(readTime) };
                 timer.Tick += (_, _) =>
