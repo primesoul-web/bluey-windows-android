@@ -32,6 +32,10 @@ public sealed class RealtimeHost
     private DispatcherTimer? _captionClear;
     private DispatcherTimer? _readingDone;
 
+    /// <summary>How long the last reply got to stay up — re-armed when the user drags
+    /// the bubble (reading in place beats a fade mid-drag, v0.3.7).</summary>
+    private double _lastReadSeconds = 6.0;
+
     /// <summary>True while he's awake and talking with you (false = follow mode).</summary>
     public bool Awake { get; private set; }
 
@@ -43,6 +47,7 @@ public sealed class RealtimeHost
         _keys = keys;
         _minter = minter;
         _captions = captions;
+        _captions.DragBegun += RearmReadingTimer;
     }
 
     /// <summary>Handles a request from the phone. <paramref name="reply"/> sends a packet back to that phone.</summary>
@@ -95,17 +100,8 @@ public sealed class RealtimeHost
                 // passes 12 — any reply over ~33 words — which killed this timer arm and
                 // left the bubble up forever ("it stays long and I can't close it").
                 var readTime = Math.Clamp(1.2 + words * 0.32, 2.8, 12) + 3;
-                _readingDone?.Stop();
-                var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(readTime) };
-                timer.Tick += (_, _) =>
-                {
-                    _readingDone = null;
-                    timer.Stop();
-                    Speaking = false;
-                    ShowCaption(null, forSeconds: 0);
-                };
-                _readingDone = timer;
-                timer.Start();
+                _lastReadSeconds = readTime;
+                RearmReadingTimer();
                 break;
 
             case "tool":
@@ -173,6 +169,24 @@ public sealed class RealtimeHost
     }
 
     // MARK: Captions
+
+    /// <summary>Arms (or re-arms) the reading timer: after [_lastReadSeconds] the bubble
+    /// tidies away. Also re-armed by a drag — the user is mid-interaction, so the
+    /// bubble must not fade out under their hand.</summary>
+    private void RearmReadingTimer()
+    {
+        _readingDone?.Stop();
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(_lastReadSeconds) };
+        timer.Tick += (_, _) =>
+        {
+            _readingDone = null;
+            timer.Stop();
+            Speaking = false;
+            ShowCaption(null, forSeconds: 0);
+        };
+        _readingDone = timer;
+        timer.Start();
+    }
 
     private void ShowCaption(string? text, double forSeconds)
     {

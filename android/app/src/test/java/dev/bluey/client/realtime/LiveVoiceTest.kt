@@ -663,4 +663,111 @@ class LiveVoiceTest {
         chirp.finishAll()
         assertEquals(LiveVoice.State.Listening, live.state)
     }
+
+    // MARK: The silence watchdog (v0.3.7) — a zombie session must never stick him
+    // in Thinking. The 2026-10-25 log: a session died mid-answer, then five holds
+    // over 24 s sent empty captions into the void until a sleep-wake cycle
+    // re-minted. Now the phone heals itself.
+
+    @Test
+    fun `an ask that never gets an answer recovers the session instead of sticking`() = runTest {
+        val captions = mutableListOf<Pair<String, Boolean>>()
+        val live = build()
+        live.onCaption = { text, done -> captions.add(text to done) }
+        live.wake()
+        transport.ready()
+        transport.sent.clear()
+
+        live.beginAsk()
+        live.endAsk()
+        assertEquals(LiveVoice.State.Thinking, live.state)
+
+        advanceTimeBy(20_000)
+        pump()
+
+        // The honest message went out, and a fresh session is already minted — the
+        // wake-time setup was cleared above, so this one is the recovery's.
+        assertTrue(captions.any { it.first == LiveVoice.LOST_SESSION_MESSAGE && it.second })
+        assertEquals(LiveVoice.State.Waking, live.state) // reconnect in flight
+        assertEquals(1, transport.sentText("setup").size)
+
+        transport.ready()
+        assertEquals(LiveVoice.State.Listening, live.state) // back — never stuck
+    }
+
+    @Test
+    fun `re-asking inside the same silence does not extend the watchdog`() = runTest {
+        val live = build()
+        live.wake()
+        transport.ready()
+
+        live.beginAsk(); live.endAsk() // ask 1 at t=0 — arms t+20 s
+        advanceTimeBy(12_000)
+        assertEquals(LiveVoice.State.Thinking, live.state)
+        live.beginAsk(); live.endAsk() // ask 2 at t=12 s — must NOT re-arm
+        advanceTimeBy(8_000) // t=20 s: the first ask's deadline
+        pump()
+
+        assertEquals(2, transport.sentText("setup").size) // recovered anyway
+    }
+
+    @Test
+    fun `a later ask after a real answer gets a fresh watchdog`() = runTest {
+        val live = build()
+        live.wake()
+        transport.ready()
+
+        live.beginAsk(); live.endAsk()
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"On it"}}}""")
+        transport.deliver("""{"serverContent":{"turnComplete":true}}""")
+        assertEquals(LiveVoice.State.Listening, live.state)
+
+        advanceTimeBy(25_000) // the first ask's watchdog is long dead
+        assertEquals(1, transport.sentText("setup").size) // no spurious recovery
+    }
+
+    @Test
+    fun `server words while thinking stand the watchdog down`() = runTest {
+        val live = build()
+        live.wake()
+        transport.ready()
+
+        live.beginAsk(); live.endAsk()
+        // A partial reply — proof of life, even though the answer is slow.
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Diving into the tech"}}}""")
+
+        advanceTimeBy(25_000)
+        pump()
+
+        assertEquals(LiveVoice.State.Speaking, live.state) // same session, mid-reply
+        assertEquals(1, transport.sentText("setup").size)
+    }
+
+    @Test
+    fun `a stale reply tail during the new hold does not refill the bubble`() = runTest {
+        val captions = mutableListOf<String>()
+        val live = build()
+        live.onCaption = { text, _ -> captions.add(text) }
+        live.wake()
+        transport.ready()
+
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Usarías Next.js para la página"}}}""")
+        live.beginAsk() // cuts him off; the bubble clears for the question
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":" para elementos"}}}""") // in flight
+
+        assertEquals(listOf("Usarías Next.js para la página", ""), captions)
+        assertEquals(LiveVoice.State.Asking, live.state) // not dragged back to Speaking
+    }
+
+    @Test
+    fun `holding while he thinks shows the asking face`() = runTest {
+        val live = build()
+        live.wake()
+        transport.ready()
+        live.beginAsk(); live.endAsk()
+        assertEquals(LiveVoice.State.Thinking, live.state)
+
+        live.beginAsk()
+        assertEquals(LiveVoice.State.Asking, live.state)
+    }
 }

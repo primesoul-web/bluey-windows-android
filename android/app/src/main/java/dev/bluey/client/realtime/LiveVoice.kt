@@ -1,6 +1,7 @@
 package dev.bluey.client.realtime
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -115,6 +116,16 @@ class LiveVoice(
     /** Counts wake attempts, so a stale wake watchdog can't fire into a later one. */
     private var wakeSerial = 0
 
+    /** The silence watchdog (v0.3.7): armed by an ask or a say-hi, stood down by any
+     * word from the server. `heardSinceAsk` is whether the server has spoken since
+     * the last ask — re-asking inside the same silent stretch must NOT extend the
+     * deadline, or a zombie session survives every retry (the 2026-10-25 log: five
+     * holds in 24 s, all into the void, until a sleep-wake cycle re-minted). */
+    private var thinkSerial = 0
+    private var thinkJob: Job? = null
+    private var thinkArmed = false
+    private var heardSinceAsk = true
+
     init {
         mic.onChunk = { samples, count -> recorder.append(samples, count) }
         mic.onAudioBase64 { base64 ->
@@ -157,12 +168,7 @@ class LiveVoice(
             }
             // Never a silent smile: if the token never comes back — a mint that hung on
             // the PC, a PC that went away mid-request — say so and stop.
-            scope.launch {
-                delay(WAKE_TIMEOUT_MS)
-                if (wakeSerial == serial && state == State.Waking && wantAwake) {
-                    giveUp("I can't reach Gemini — it's taking too long. Check that the PC is on and online, then hold the screen to try again.")
-                }
-            }
+            armWakeWatchdog()
             val request = requestToken
             if (request == null) {
                 wantAwake = false
@@ -188,6 +194,9 @@ class LiveVoice(
         val wasRunning = wantAwake || transport != null
         wantAwake = false
         reconnecting = false
+        thinkJob?.cancel()
+        thinkArmed = false
+        heardSinceAsk = true
         recorder.finish()
         if (wasRunning) onSessionEnd?.invoke()
         askedItems.clear()
@@ -219,6 +228,7 @@ class LiveVoice(
         transcript = ""
         chirpedThisResponse = false
         send(RealtimeEvents.sayHi("Reply with a quick, cheerful hi in under eight words."))
+        armSilenceWatchdog()
     }
 
     // MARK: Hold to ask
@@ -232,7 +242,9 @@ class LiveVoice(
             return
         }
         if (transport != null) send(RealtimeEvents.activityStart) // queues until the wire is live
-        if (state == State.Listening || state == State.Speaking) setState(State.Asking)
+        // Thinking included (v0.3.7): holding while he's (possibly hung) thinking
+        // shows the all-ears face instead of a button that seems dead.
+        if (state == State.Listening || state == State.Speaking || state == State.Thinking) setState(State.Asking)
     }
 
     /** You let go: he answers (or does the thing) using everything he's heard as context. */
@@ -256,6 +268,7 @@ class LiveVoice(
         chirpedThisResponse = false
         // Close off what you just said (it may still be mid-sentence) and ask for a reply.
         send(RealtimeEvents.activityEnd)
+        armSilenceWatchdog()
     }
 
     // MARK: Connection
@@ -332,6 +345,8 @@ class LiveVoice(
         sessionReady = false
         responseActive = false
         toolsRunning = 0
+        thinkJob?.cancel()
+        thinkArmed = false
         if (!wantAwake) {
             sleep()
             return
@@ -352,6 +367,60 @@ class LiveVoice(
         onCaption?.invoke(message, true)
         onSessionError?.invoke(message)
         sleep()
+    }
+
+    /** Never a silent smile: if the session never lands — a mint that hung on the PC,
+     *  a PC that went away mid-recovery — say so and stop. Shared by wake and the
+     *  silence watchdog's own recovery (v0.3.7). */
+    private fun armWakeWatchdog() {
+        val serial = ++wakeSerial
+        scope.launch {
+            delay(WAKE_TIMEOUT_MS)
+            if (wakeSerial == serial && state == State.Waking && wantAwake) {
+                giveUp("I can't reach Gemini — it's taking too long. Check that the PC is on and online, then hold the screen to try again.")
+            }
+        }
+    }
+
+    // MARK: The silence watchdog
+
+    /** Arms the zombie-session watchdog unless one already covers this silent
+     * stretch. Twenty seconds: the slowest honest leg on record (a web_research
+     * round trip) answered in ~11 s; the dead zone of 2026-10-25 sat unanswered for
+     * 24 s while five holds reset nothing. */
+    private fun armSilenceWatchdog() {
+        if (thinkArmed && !heardSinceAsk) return // a re-ask must not reset the clock
+        heardSinceAsk = false
+        thinkArmed = true
+        val serial = ++thinkSerial
+        thinkJob?.cancel()
+        thinkJob = scope.launch {
+            delay(THINK_TIMEOUT_MS)
+            if (thinkSerial == serial && wantAwake) recoverDeadSession()
+        }
+    }
+
+    /** The session stopped answering — the socket may still be open, but nothing is
+     * behind it (the Live API resets its sessions every few minutes; a silent reset
+     * leaves sends "succeeding" into the void). Tear it down and mint a fresh one —
+     * the cure every time, per the logs — instead of leaving him stuck thinking. */
+    private fun recoverDeadSession() {
+        thinkArmed = false
+        heardSinceAsk = true
+        consecutiveFailures = 0
+        transport?.close()
+        transport = null
+        sessionReady = false
+        responseActive = false
+        toolsRunning = 0
+        pendingSends.clear()
+        transcript = ""
+        setState(State.Waking) // honest: a fresh session is being minted right now
+        onCaption?.invoke(LOST_SESSION_MESSAGE, true)
+        if (wantAwake) {
+            armWakeWatchdog()
+            reconnect()
+        }
     }
 
     /** The user-facing text for a token that never came. */
@@ -379,10 +448,19 @@ class LiveVoice(
     // MARK: Events
 
     private fun handle(text: String) {
+        // Any word from the server is proof of life — the silence watchdog stands down.
+        heardSinceAsk = true
+        thinkArmed = false
+        thinkJob?.cancel()
         when (val event = RealtimeEvents.parse(text)) {
             RealtimeEvents.Event.SetupComplete -> onSessionReady()
 
             is RealtimeEvents.Event.TextDelta -> {
+                // A delta landing while you hold is the tail of the reply you just cut
+                // off — the bubble was cleared for your question, and stale words
+                // must not re-fill it (the mid-answer fragment that flashed on
+                // 2026-10-25).
+                if (holding) return
                 // Output transcriptions may arrive as deltas or as running text.
                 transcript = if (event.delta.length >= transcript.length &&
                     event.delta.startsWith(transcript)
@@ -521,6 +599,16 @@ class LiveVoice(
          * ask's own patience budget (8 s landing + 6 s ask + heal + retry) must fit
          * inside it, or the watchdog would cut a still-healing ask down. */
         const val WAKE_TIMEOUT_MS = 30_000L
+
+        /** How long an ask may go unanswered before the session is declared dead and
+         * re-minted (v0.3.7). Generous next to the slowest honest leg on record (a
+         * web_research round trip answered in ~11 s), far below the dead zone it
+         * cures. Re-asks inside the same silence don't extend it. */
+        const val THINK_TIMEOUT_MS = 20_000L
+
+        /** What he says when the silence watchdog had to re-mint the session. */
+        const val LOST_SESSION_MESSAGE =
+            "I lost the line to Gemini for a moment — hold the screen and ask me again."
     }
 
     private fun chirp(syllables: Int) {

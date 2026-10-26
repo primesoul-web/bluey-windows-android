@@ -485,3 +485,48 @@ chirp-instead-of-speech replies are the original's design, not a bug:
 with a little cartoon chirp here." The screen/web tool stubs answering
 "I can't see / I can't browse" are the M3/M4 stand-ins as planned — the
 tool loop itself round-tripped on hardware for the first time.
+
+## M2.16 — the thinking that never ended, and the bubble you couldn't grab (v0.3.7, 2026-10-27)
+
+The first long hardware session (90 minutes, log of 2026-10-25) worked —
+and showed two real defects. Both fixed; both now have regression tests.
+
+- **"Stuck in thinking"** (the phone's hold-to-talk freezing). The log's
+  signature: a session dies mid-answer (23:48:34 — a double-tap and a
+  re-hold crossing a streaming reply), the socket stays open, and every
+  send after that "succeeds" into a server that no longer answers. Five
+  holds over 24 minutes' worth of seconds produce empty captions and
+  nothing else, `Thinking` has no timeout, and holding during `Thinking`
+  changed no visible state — the button felt dead. Only a PC sleep-wake
+  cycle (fresh token) cured it; the logs show that cure working every
+  time, so the fix makes the phone apply it itself:
+  - a **silence watchdog** — an ask (or say-hi) unanswered for 20 s, with
+    re-asks inside the same silence NOT extending the deadline, tears the
+    zombie session down, mints a fresh token, reconnects, and shows
+    "I lost the line to Gemini for a moment — hold the screen and ask me
+    again." Twenty seconds sits well above the slowest honest leg on
+    record (~11 s for a web_research round trip) and well below the dead
+    zone it cures. Any server word stands the watchdog down.
+  - holding during `Thinking` now shows the all-ears `Asking` face, so a
+    slow answer never reads as a dead button;
+  - a stale reply tail landing mid-hold (the " para elementos" fragment
+    that re-filled the just-cleared bubble) is dropped — replies only
+    render after the question is released.
+
+- **The bubble you couldn't dismiss or move** ("it still does not
+  disappear when I click… add that I can move the box freely"). The M2.15
+  bubble was click-through by design, like the original's. By request,
+  v0.3.7 departs: a click anywhere on the bubble closes it, a drawn ✕
+  badge sits on its top-right corner, and dragging moves it — the dragged
+  spot is where every later bubble lands (clamped so at least 96 DIPs and
+  the ✕ stay reachable; resets on app restart). Only the bubble itself
+  takes the pointer: `WM_NCHITTEST` returns `HTTRANSPARENT` everywhere
+  outside it (shadow margins, corner cut-outs), and the window still
+  never activates or steals focus. Dragging re-arms the reading timer so
+  the bubble can't fade out under the user's hand mid-drag.
+
+Phone 0.3.7 (versionCode 7) and Windows 0.3.7. Tests: Android 134/134
+(six new: watchdog recovery, no-extension-on-re-ask, fresh-watchdog-after-
+answer, stand-down-on-server-words, stale-tail drop, asking-face-while-
+thinking), Windows 132/132 (nine new CaptionGeometry tests: font tiers,
+width clamp, anchored placement, pin clamping, chrome accounting).
