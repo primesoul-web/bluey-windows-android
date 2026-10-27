@@ -6,6 +6,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using GooglyProtocol;
 using GooglyRealtime;
 
@@ -50,6 +51,22 @@ public sealed class OverlayWindow : Window
     private double _lastFrame;
     private double _lastFaceSend;
     private bool _running;
+
+    /// <summary>
+    /// The heartbeat backstop (v0.4.1). The original steps its engine on a
+    /// CADisplayLink, which fires every vsync forever. WPF's
+    /// <see cref="CompositionTarget.Rendering"/> only fires when something actually
+    /// invalidated — and a settled overlay invalidates nothing: every transform has
+    /// converged bit-exactly, the body is tucked below the screen edge at opacity 0,
+    /// and property writes that don't change a value schedule no render pass. The
+    /// loop would stall, the ~1 Hz face heartbeat would stop, and the phone — whose
+    /// 2.5 s liveness falls back to an awake, wandering-eyed listening face, exactly
+    /// like the original iOS — would "wake up by itself" and never doze again (the
+    /// M3.1 hardware report). This timer notices a stalled loop and drives the frames
+    /// itself; the moment anything visual changes, the transform writes invalidate,
+    /// the render pass resumes, and the vsync loop takes over seamlessly.
+    /// </summary>
+    private readonly DispatcherTimer _heartbeat = new() { Interval = TimeSpan.FromMilliseconds(100) };
 
     // Where the eyes look (engine-space unit vector), eased every frame.
     private Pt _look = new(-0.7, -0.7);
@@ -152,15 +169,28 @@ public sealed class OverlayWindow : Window
         _running = true;
         _lastFrame = 0;
         CompositionTarget.Rendering += OnFrame;
+        _heartbeat.Tick += OnHeartbeat;
+        _heartbeat.Start();
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
     }
 
     protected override void OnClosed(EventArgs e)
     {
         CompositionTarget.Rendering -= OnFrame;
+        _heartbeat.Stop();
+        _heartbeat.Tick -= OnHeartbeat;
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
         _running = false;
         base.OnClosed(e);
+    }
+
+    /// <summary>True when the render loop has gone quiet — the settled-overlay stall
+    /// the heartbeat exists to cover.</summary>
+    private void OnHeartbeat(object? sender, EventArgs e)
+    {
+        if (!_running) return;
+        if (_clock.Elapsed.TotalSeconds - _lastFrame < 0.15) return; // vsync loop alive
+        OnFrame(sender, e);
     }
 
     private void OnDisplayChanged(object? sender, EventArgs e) =>

@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using GooglyProtocol;
+using GooglyRealtime;
 
 namespace GooglyWindows;
 
@@ -46,18 +47,22 @@ public sealed class TrayIcon : IDisposable
     public event Action<bool>? GlowToggled;
     public event Action<bool>? ShowCursorToggled;
 
-    private bool _followMouse = true;
+    // The M3.1 overlay settings, held as toggles whose click semantics are pinned by
+    // TrayToggleTests: WPF flips a checkable item's IsChecked BEFORE Click fires, so
+    // the handler must apply the value it reads (the new one) — never a negation
+    // (the v0.4.0 bug: the three toggles could never change from the menu).
+    private readonly TrayToggle _followMouse = new(true);
     private double _cursorSize = 72;
-    private bool _glow;
-    private bool _showCursor = true;
+    private readonly TrayToggle _glow = new(false);
+    private readonly TrayToggle _showCursor = new(true);
 
     /// <summary>Syncs the overlay settings' checkmarks (called whenever settings change).</summary>
     public void UpdateOverlaySettings(bool followMouse, double cursorSize, bool glow, bool showCursor)
     {
-        _followMouse = followMouse;
+        _followMouse.Sync(followMouse);
         _cursorSize = cursorSize;
-        _glow = glow;
-        _showCursor = showCursor;
+        _glow.Sync(glow);
+        _showCursor.Sync(showCursor);
     }
 
     public IntPtr Hwnd => _source?.Handle ?? throw new InvalidOperationException("tray icon not shown");
@@ -213,12 +218,18 @@ public sealed class TrayIcon : IDisposable
         {
             Header = "Eyes Follow My Mouse",
             IsCheckable = true,
-            IsChecked = _followMouse,
+            IsChecked = _followMouse.IsOn,
         };
-        follow.Click += (_, _) => FollowMouseToggled?.Invoke(!follow.IsChecked);
+        // WPF has already flipped IsChecked by now; Click() mirrors that flip and
+        // returns the NEW value — the one the settings must be set to.
+        follow.Click += (_, _) => FollowMouseToggled?.Invoke(_followMouse.Click());
         menu.Items.Add(follow);
 
         var sizeMenu = new MenuItem { Header = "Cursor Size" };
+        // Size items have no inversion to get wrong: each Click sends the size it
+        // stands for, so WPF's own check-flip is cosmetic only (the menu closes and
+        // rebuilds from _cursorSize on the next open). Checked against the v0.4.0
+        // toggle bug.
         foreach (var s in (double[])[48, 72, 96, 120])
         {
             var size = s;
@@ -237,18 +248,18 @@ public sealed class TrayIcon : IDisposable
         {
             Header = "Cursor Glow",
             IsCheckable = true,
-            IsChecked = _glow,
+            IsChecked = _glow.IsOn,
         };
-        glowItem.Click += (_, _) => GlowToggled?.Invoke(!glowItem.IsChecked);
+        glowItem.Click += (_, _) => GlowToggled?.Invoke(_glow.Click());
         menu.Items.Add(glowItem);
 
         var showItem = new MenuItem
         {
             Header = "Show Cursor",
             IsCheckable = true,
-            IsChecked = _showCursor,
+            IsChecked = _showCursor.IsOn,
         };
-        showItem.Click += (_, _) => ShowCursorToggled?.Invoke(!showItem.IsChecked);
+        showItem.Click += (_, _) => ShowCursorToggled?.Invoke(_showCursor.Click());
         menu.Items.Add(showItem);
 
         menu.Items.Add(new Separator());

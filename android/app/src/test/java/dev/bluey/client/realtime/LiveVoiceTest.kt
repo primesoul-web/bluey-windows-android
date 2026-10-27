@@ -760,12 +760,21 @@ class LiveVoiceTest {
 
         live.beginAsk(); live.endAsk()
         transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Diving"}}}""")
+        // v0.3.9: five seconds of stream quiet now dip him to Listening (the reply
+        // screen can't be pinned by a stalled stream) — but the session itself is
+        // left alone, and a resumed word puts him straight back mid-reply.
         advanceTimeBy(12_000)
-        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Diving into the tech"}}}""")
-        advanceTimeBy(12_000) // t=24 s: past the first deadline — but words kept coming
-        pump()
+        assertEquals(LiveVoice.State.Listening, live.state) // the dip after 5 s of quiet
 
-        assertEquals(LiveVoice.State.Speaking, live.state) // same session, mid-reply
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Diving into the tech"}}}""")
+        pump()
+        assertEquals(LiveVoice.State.Speaking, live.state) // the slow word resumed the reply
+        advanceTimeBy(4_000) // t=16 s: inside the fresh 5 s quiet window
+        pump()
+        assertEquals(LiveVoice.State.Speaking, live.state) // still mid-reply
+
+        advanceTimeBy(8_000) // t=24 s: past the first deadline — but words kept coming
+        pump()
         assertEquals(1, transport.sentText("setup").size) // no spurious recovery
     }
 
@@ -825,5 +834,149 @@ class LiveVoiceTest {
 
         live.beginAsk()
         assertEquals(LiveVoice.State.Asking, live.state)
+    }
+
+    // MARK: The reply watchdog and hard caps (v0.3.9) — the M3.1 hardware report:
+    // "after a reply finishes, the phone stays in the Speaking/reply state until I
+    // hold to ask again". finishIfQuiet was the only way off the reply screen, and
+    // it stayed blocked when the turn's completing event never arrived, or when a
+    // chirp's completion callback never fired, or when a tool callback hung. Now
+    // quiet after the last delta (5 s) or captionDone (1.5 s) ends the reply
+    // regardless; a single tap cancels; and no state outlives its hard cap.
+
+    @Test
+    fun `a stream that never finishes returns him to listening five seconds after its last delta`() = runTest {
+        val captions = mutableListOf<Pair<String, Boolean>>()
+        val live = build()
+        live.onCaption = { text, done -> captions.add(text to done) }
+        live.wake()
+        transport.ready()
+
+        live.beginAsk(); live.endAsk()
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"The hexagon has six"}}}""")
+        assertEquals(LiveVoice.State.Speaking, live.state)
+        // …and the turnComplete never arrives — the M3.1 hardware case. No matter:
+        advanceTimeBy(4_000); pump()
+        assertEquals(LiveVoice.State.Speaking, live.state) // inside the quiet window
+        advanceTimeBy(1_100); pump()
+        assertEquals(LiveVoice.State.Listening, live.state) // 5 s of quiet = over
+
+        // The PC got its captionDone, so the bubble's reading timer can tidy it away
+        // instead of leaving the last words up forever.
+        assertEquals("The hexagon has six" to true, captions.last())
+    }
+
+    @Test
+    fun `a stuck chirp queue cannot hold the reply screen past the caption done grace`() = runTest {
+        chirp.autoComplete = false // the chirp's completion callback never fires
+        val live = build()
+        live.wake()
+        transport.ready()
+        chirp.played.clear()
+
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Hello there"}}}""")
+        transport.deliver("""{"serverContent":{"turnComplete":true}}""")
+        assertEquals(LiveVoice.State.Speaking, live.state) // the chirp queue pins it
+
+        advanceTimeBy(1_400); pump()
+        assertEquals(LiveVoice.State.Speaking, live.state) // inside the 1.5 s grace
+        advanceTimeBy(200); pump()
+        assertEquals(LiveVoice.State.Listening, live.state) // regardless of chirp buffers
+    }
+
+    @Test
+    fun `a single tap while he is speaking cancels the reply and clears the bubble`() = runTest {
+        val captions = mutableListOf<Pair<String, Boolean>>()
+        val live = build()
+        live.onCaption = { text, done -> captions.add(text to done) }
+        live.wake()
+        transport.ready()
+
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Let me tell you about"}}}""")
+        assertEquals(LiveVoice.State.Speaking, live.state)
+
+        live.cancel()
+        assertEquals(LiveVoice.State.Listening, live.state)
+        assertEquals("" to false, captions.last()) // the PC's bubble is hidden now
+
+        // The server's tail of the stopped reply must not refill the cleared bubble…
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":" the whole thing."}}}""")
+        pump()
+        assertEquals(LiveVoice.State.Listening, live.state)
+        assertEquals("" to false, captions.last())
+
+        // …and the turn's real end is bookkeeping only — no new captionDone either.
+        transport.deliver("""{"serverContent":{"turnComplete":true}}""")
+        pump()
+        assertEquals(LiveVoice.State.Listening, live.state)
+        assertEquals("" to false, captions.last())
+        assertEquals(1, transport.sentText("setup").size) // the session was never torn down
+    }
+
+    @Test
+    fun `a tap while he is thinking cancels that too`() = runTest {
+        val live = build()
+        live.wake()
+        transport.ready()
+        live.beginAsk(); live.endAsk()
+        assertEquals(LiveVoice.State.Thinking, live.state)
+
+        live.cancel()
+        assertEquals(LiveVoice.State.Listening, live.state)
+    }
+
+    @Test
+    fun `a tap does nothing while he is listening`() = runTest {
+        val live = build()
+        live.wake()
+        transport.ready()
+
+        live.cancel()
+        assertEquals(LiveVoice.State.Listening, live.state) // nothing to stop
+    }
+
+    @Test
+    fun `a hung tool callback cannot leave him thinking forever`() = runTest {
+        val live = build(toolRunner = { _, _, _ -> }) // the PC never answers this one
+        live.wake()
+        transport.ready()
+
+        live.beginAsk(); live.endAsk()
+        transport.deliver(
+            """{"toolCall":{"functionCalls":[{"name":"web_research","id":"call_1","args":{"q":"hexagons"}}]}}""",
+        )
+        assertEquals(LiveVoice.State.Thinking, live.state)
+
+        advanceTimeBy(20_000); pump() // the silence clock is stood down for the tool leg…
+        assertEquals(LiveVoice.State.Thinking, live.state) // …so nothing else was coming
+
+        advanceTimeBy(41_000); pump() // past the 60 s hard cap
+        assertEquals(LiveVoice.State.Listening, live.state) // whatever hung, he's back
+        assertEquals(0, transport.sentText("toolResponse").size) // the orphan never "finished"
+    }
+
+    @Test
+    fun `a never-ending trickle of deltas cannot leave him speaking forever`() = runTest {
+        val live = build()
+        live.wake()
+        transport.ready()
+
+        live.beginAsk(); live.endAsk()
+        // A pathological stream that trickles one delta every 4 s, never ending: each
+        // re-arms the 5 s reply watchdog, so only the 120 s hard cap can end it.
+        for (i in 1..28) {
+            transport.deliver("""{"serverContent":{"outputTranscription":{"text":"word $i"}}}""")
+            advanceTimeBy(4_000)
+            pump()
+        }
+        assertEquals(LiveVoice.State.Speaking, live.state) // t=112 s: still trickling
+
+        for (i in 29..33) {
+            transport.deliver("""{"serverContent":{"outputTranscription":{"text":"word $i"}}}""")
+            advanceTimeBy(4_000)
+            pump()
+        }
+        // The cap fired at t=120 s and the trickle's later words are a canceled tail.
+        assertEquals(LiveVoice.State.Listening, live.state)
     }
 }

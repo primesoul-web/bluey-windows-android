@@ -116,6 +116,29 @@ class LiveVoice(
     /** Counts wake attempts, so a stale wake watchdog can't fire into a later one. */
     private var wakeSerial = 0
 
+    /** (v0.3.9) The reply watchdog's timer, armed by every caption delta and every
+     * captionDone: he can never get stuck on the reply screen again (the M3.1
+     * hardware report — a reply whose TurnComplete never arrived, or a chirp whose
+     * completion callback never fired, used to leave him Speaking until the next
+     * hold-to-ask). */
+    private var replyJob: Job? = null
+
+    /** (v0.3.9) A hard cap per state, armed on entry: nothing can leave him Thinking
+     * or Speaking forever, whatever stopped — a hung tool callback, a reply that
+     * trickles deltas forever. */
+    private var stateCapJob: Job? = null
+    private var stateSerial = 0
+
+    /** (v0.3.9) True while a reply's exchange is still open (asked, said-hi or tool
+     * results owed): a delta arriving after the reply watchdog called the quiet
+     * over means the stream resumed — an honest slow leg — so he dips back into
+     * Speaking instead of refilling the bubble from Listening. */
+    private var streamOpen = false
+
+    /** (v0.3.9) True from a deliberate stop until the server's turn really ends:
+     * late deltas of a canceled reply must not refill the cleared bubble. */
+    private var replyCanceled = false
+
     /** The silence watchdog (v0.3.7, quiescence since v0.3.8): armed where the server
      * owes the next word (an ask, a say-hi, tool results going back), refreshed by
      * every server word while the exchange is still open, stood down when it isn't.
@@ -141,7 +164,86 @@ class LiveVoice(
     private fun setState(new: State) {
         if (new == state) return
         state = new
+        armStateCap(new)
         onStateChange?.invoke(new)
+    }
+
+    /** (v0.3.9) Never Thinking or Speaking longer than a hard cap, whatever the
+     * cause. The cap is re-armed on every state change (each entry into Thinking or
+     * Speaking restarts its own clock) and guarded by a serial, so a stale fire
+     * can't cut down a later exchange. */
+    private fun armStateCap(new: State) {
+        stateCapJob?.cancel()
+        val cap = when (new) {
+            State.Thinking -> THINK_CAP_MS
+            State.Speaking -> SPEAK_CAP_MS
+            else -> return
+        }
+        val serial = ++stateSerial
+        stateCapJob = scope.launch {
+            delay(cap)
+            if (stateSerial == serial && state == new) forceEndReply(clearBubble = true)
+        }
+    }
+
+    /** (v0.3.9, fix a) Arms the reply watchdog: quiet for this long after the last
+     * caption delta or captionDone and the reply is over — regardless of chirp
+     * buffers or responseActive, exactly the two things that used to pin the reply
+     * screen. */
+    private fun armReplyWatchdog(ms: Long) {
+        replyJob?.cancel()
+        replyJob = scope.launch {
+            delay(ms)
+            if (state == State.Speaking || state == State.Thinking) endReply()
+        }
+    }
+
+    /** (fix a) The reply is over for now — back to Listening whatever the chirp queue
+     * or the response flag still claim. Reached only from the reply watchdog (the
+     * fast path, finishIfQuiet, still runs first when everything is genuinely quiet).
+     * Deliberately gentler than a cancel: the stream may still be alive (slow words),
+     * so late deltas re-enter Speaking, and the 20 s silence recovery stays armed —
+     * a stream that is truly dead still gets its session re-minted. */
+    private fun endReply() {
+        if (holding) return // your finger is already down; Asking shows
+        if (toolsRunning > 0) return // the PC's tools legitimately own Thinking
+        if (state == State.Speaking && transcript.isNotEmpty()) {
+            // The stream died mid-reply: hand the PC its captionDone so the reading
+            // timer tidies the bubble instead of leaving it up forever.
+            onCaption?.invoke(transcript, true)
+        }
+        responseActive = false
+        chirps.stopAll()
+        replyJob?.cancel()
+        if (state == State.Speaking || state == State.Thinking) {
+            setState(State.Listening)
+        }
+    }
+
+    /** (fixes b and d) Stops the exchange dead — the tap-to-cancel and the hard caps.
+     * Late deltas of the stopped reply are ignored until its turn really ends. */
+    private fun forceEndReply(clearBubble: Boolean) {
+        replyCanceled = true
+        streamOpen = false
+        responseActive = false
+        toolsRunning = 0
+        chirps.stopAll()
+        standDownSilenceWatchdog()
+        awaitingQuestion = false
+        replyJob?.cancel()
+        if (clearBubble) onCaption?.invoke("", false) // hides the PC's bubble now
+        if (!holding && (state == State.Speaking || state == State.Thinking)) {
+            setState(State.Listening)
+        }
+    }
+
+    /** (fix b) A single tap while he's thinking or speaking: stop the chirp, clear
+     * the PC's bubble and go back to Listening. The server's own turn is left to
+     * end by itself — its late deltas are ignored until it does. */
+    fun cancel() {
+        if (state != State.Speaking && state != State.Thinking) return
+        if (!wantAwake) return
+        forceEndReply(clearBubble = true)
     }
 
     // MARK: Wake and sleep
@@ -200,6 +302,10 @@ class LiveVoice(
         wantAwake = false
         reconnecting = false
         standDownSilenceWatchdog()
+        replyJob?.cancel()
+        stateCapJob?.cancel()
+        replyCanceled = false
+        streamOpen = false
         recorder.finish()
         if (wasRunning) onSessionEnd?.invoke()
         askedItems.clear()
@@ -228,6 +334,7 @@ class LiveVoice(
             return
         }
         responseActive = true
+        streamOpen = true
         transcript = ""
         chirpedThisResponse = false
         send(RealtimeEvents.sayHi("Reply with a quick, cheerful hi in under eight words."))
@@ -239,6 +346,7 @@ class LiveVoice(
     /** You pressed and held the screen: what you say now is the question. */
     fun beginAsk() {
         holding = true
+        replyCanceled = false // a new question is coming; deltas are welcome again
         onCaption?.invoke("", false) // clears his last bubble
         if (state == State.Asleep) {
             wake()
@@ -263,6 +371,8 @@ class LiveVoice(
 
     private fun ask() {
         askWhenReady = false
+        replyCanceled = false
+        streamOpen = true // a reply is owed from here to its TurnComplete
         setState(State.Thinking)
         awaitingQuestion = true
         // A response is now expected — the Live API has no response.created to mark it.
@@ -483,8 +593,8 @@ class LiveVoice(
                 // A delta landing while you hold is the tail of the reply you just cut
                 // off — the bubble was cleared for your question, and stale words
                 // must not re-fill it (the mid-answer fragment that flashed on
-                // 2026-10-25).
-                if (holding) return
+                // 2026-10-25). Same for the tail of a reply stopped by a tap (v0.3.9).
+                if (holding || replyCanceled) return
                 // Output transcriptions may arrive as deltas or as running text.
                 transcript = if (event.delta.length >= transcript.length &&
                     event.delta.startsWith(transcript)
@@ -496,8 +606,14 @@ class LiveVoice(
                     responseActive = true
                     setState(State.Speaking)
                     chirp(syllables = transcript.split(" ").size.coerceIn(3, 5))
+                } else if (streamOpen && state == State.Listening) {
+                    // The stream resumed after the reply watchdog called the quiet
+                    // over (v0.3.9): an honest slow leg, not a dead one — he's
+                    // mid-reply again, not a listening face with a refilling bubble.
+                    setState(State.Speaking)
                 }
                 onCaption?.invoke(transcript, false)
+                armReplyWatchdog(REPLY_DELTA_TIMEOUT_MS) // quiet 5 s = the reply is over
             }
 
             is RealtimeEvents.Event.UserTranscript -> {
@@ -521,24 +637,34 @@ class LiveVoice(
                 // this, the completing event itself would re-arm it into idle
                 // listening and every finished chat would "recover" 20 s later).
                 standDownSilenceWatchdog()
-                if (transcript.isNotEmpty()) {
+                val wasCanceled = replyCanceled
+                replyCanceled = false // the turn really ended; deltas are welcome again
+                streamOpen = false
+                if (transcript.isNotEmpty() && !wasCanceled) {
                     onCaption?.invoke(transcript, true)
                     onReply?.invoke(transcript)
                 }
                 awaitingQuestion = false
                 sealUserTurn()
                 finishIfQuiet()
+                // The backstop: even if the chirp queue or anything else still pins
+                // the reply screen, this fires him back to Listening 1.5 s later.
+                armReplyWatchdog(REPLY_DONE_TIMEOUT_MS)
             }
 
             RealtimeEvents.Event.Interrupted -> {
                 // You started a new ask mid-reply; the bubble was already cleared.
                 responseActive = false
+                replyCanceled = false
+                streamOpen = false
                 standDownSilenceWatchdog() // that exchange is over; your ask re-arms
                 finishIfQuiet()
+                armReplyWatchdog(REPLY_DONE_TIMEOUT_MS)
             }
 
             is RealtimeEvents.Event.ToolCalls -> {
                 responseActive = false
+                streamOpen = true // words are owed once the results go back
                 if (state != State.Speaking) setState(State.Thinking)
                 // The PC's turn now: no server words arrive while its tools run, so
                 // the silence clock pauses here and re-arms when the results go
@@ -589,8 +715,9 @@ class LiveVoice(
                         // input_image + response.create order.
                         send(RealtimeEvents.toolResponse(results))
                         for (image in images) send(RealtimeEvents.imageTurn(image))
-                        // The model owes words again — the silence clock re-arms (v0.3.8).
-                        armSilenceWatchdog()
+                        // The model owes words again — the silence clock re-arms (v0.3.8),
+                        // unless this is the tail of a reply the user already stopped.
+                        if (!replyCanceled) armSilenceWatchdog()
                     }
                 }
             }
@@ -647,6 +774,27 @@ class LiveVoice(
         /** What he says when the silence watchdog had to re-mint the session. */
         const val LOST_SESSION_MESSAGE =
             "I lost the line to Gemini for a moment — hold the screen and ask me again."
+
+        /** (v0.3.9, fix a) Quiet after the last caption delta before the reply is
+         * declared over — honest transcription deltas arrive over a second or two as
+         * he talks, so five full seconds of stream silence is a finished (or dead)
+         * reply no matter what the chirp queue or the response flag still claim. A
+         * stream that resumes after this simply dips him back into Speaking. */
+        const val REPLY_DELTA_TIMEOUT_MS = 5_000L
+
+        /** (v0.3.9, fix a) Quiet after a captionDone before he must be back to
+         * Listening. The normal path (finishIfQuiet) is instant when all is quiet;
+         * this is the backstop for the cases it used to miss. */
+        const val REPLY_DONE_TIMEOUT_MS = 1_500L
+
+        /** (v0.3.9, fix d) Hard caps: never sit in Thinking or Speaking longer than
+         * this, whatever the cause. Thinking's 60 s sits above the 20 s silence
+         * watchdog AND the slowest honest tool leg on record (~11 s, budgeting up to
+         * a 30 s leg plus the 20 s post-tool window = 50 s); Speaking's 120 s only
+         * ever trips on a pathological never-ending stream (every honest reply ends
+         * far sooner via its deltas). */
+        const val THINK_CAP_MS = 60_000L
+        const val SPEAK_CAP_MS = 120_000L
     }
 
     private fun chirp(syllables: Int) {

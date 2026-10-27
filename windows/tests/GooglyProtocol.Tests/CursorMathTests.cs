@@ -341,6 +341,47 @@ public class CursorMathTests
     }
 
     [Fact]
+    public void A_still_mouse_keeps_him_asleep_through_a_full_minute()
+    {
+        // The M3.1 hardware report: with Eyes Follow My Mouse on, he dozed off after
+        // 15 s of stillness and then "woke up by himself, and the sleep cycle never
+        // repeated". The engine math can never do that — pinned here over a full
+        // minute of simulated time with the mouse parked: drowsy by 5 s, resting by
+        // 15 s, and resting for the whole rest of the minute, with no frame, jitter
+        // or clock trick flipping him back. (The real culprit was WPF's render loop
+        // stalling once the overlay settled, which stopped the face packets — fixed
+        // by the overlay's heartbeat backstop, not by the engine.)
+        var rig = new Rig { Engine = new CursorEngine { Size = 72, PhonePosition = 0.5 } };
+        rig.Engine.SetMode(CursorMode.Following);
+        var still = new Pt(960, 500);
+        rig.Step(60, mouse: still);
+        Assert.Equal(CursorMood.Listening, rig.Engine.Face(rig.Bounds, rig.Now).Mood);
+        rig.Step(5 * 60, mouse: still); // 6 s idle: drowsy
+        Assert.Equal(CursorMood.Sleepy, rig.Engine.Face(rig.Bounds, rig.Now).Mood);
+        rig.Step(10 * 60, mouse: still); // 16 s idle: dozed off
+        Assert.Equal(CursorMood.Resting, rig.Engine.Face(rig.Bounds, rig.Now).Mood);
+
+        // The long haul: 60 s total of stillness, sampled every half-second — he
+        // must still be resting at every single sample. No spontaneous wake exists.
+        for (var i = 0; i < 88; i++)
+        {
+            rig.Step(30, mouse: still); // 0.5 s per sample
+            Assert.Equal(CursorMood.Resting, rig.Engine.Face(rig.Bounds, rig.Now).Mood);
+        }
+        Assert.True(rig.Now >= 60.0, "the simulated minute must actually elapse");
+
+        // And the wake is honest: a real mouse move beyond the 1.5 pt jitter
+        // threshold brings him straight back to listening.
+        rig.Step(10, mouse: new Pt(1200, 500));
+        Assert.Equal(CursorMood.Listening, rig.Engine.Face(rig.Bounds, rig.Now).Mood);
+        // ...but a sub-threshold jitter does not (no phantom wakes from rounding).
+        rig.Step(10, mouse: new Pt(1200.7, 500.7));
+        Assert.Equal(CursorMood.Listening, rig.Engine.Face(rig.Bounds, rig.Now).Mood);
+        rig.Step(10 * 60, mouse: new Pt(1200.7, 500.7)); // parked again 10 s
+        Assert.Equal(CursorMood.Sleepy, rig.Engine.Face(rig.Bounds, rig.Now).Mood);
+    }
+
+    [Fact]
     public void Pinned_upgrades_listening_to_pointing_and_gaze_can_be_overridden()
     {
         var rig = new Rig { Engine = new CursorEngine { Size = 72, PhonePosition = 0.5 } };

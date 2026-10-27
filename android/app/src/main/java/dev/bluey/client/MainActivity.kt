@@ -304,7 +304,11 @@ private fun BlueyRoot(
             .fillMaxSize()
             .background(Color.Black),
     ) {
-        // His face: double tap wakes/sleeps, press-and-hold asks.
+        // His face: double tap wakes/sleeps, press-and-hold asks — and while he's
+        // thinking or speaking, a single tap stops the reply (v0.3.9: the phone used
+        // to sit on the reply screen until the next hold-to-ask). Compose holds a
+        // single tap back until the double-tap window closes, so wake/sleep keeps
+        // working on a double tap and the cancel only fires on a true single tap.
         FaceView(
             animator,
             now,
@@ -312,6 +316,11 @@ private fun BlueyRoot(
                 .fillMaxSize()
                 .pointerInput(Unit) {
                     detectTapGestures(
+                        onTap = {
+                            if (liveState.value == LiveVoice.State.Thinking ||
+                                liveState.value == LiveVoice.State.Speaking
+                            ) live.cancel()
+                        },
                         onDoubleTap = { live.toggle() }, // double tap: wake up / back to follow mode
                     )
                 }
@@ -352,6 +361,26 @@ private fun BlueyRoot(
             Text(
                 text = "Waking up — connecting to Gemini… (the mic is already on)",
                 color = Color(0xFFF4F1FA).copy(alpha = 0.8f),
+                fontSize = 12.sp,
+                fontFamily = dev.bluey.client.ui.BlueyFonts.plexSans,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 28.dp, vertical = 30.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.White.copy(alpha = 0.06f))
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            )
+        }
+
+        // While he's thinking or speaking (v0.3.9): a short hint that a single tap
+        // stops the reply — without it, the only way off the reply screen was another
+        // hold-to-ask. Yields to a session error, which matters more.
+        if ((liveState.value == LiveVoice.State.Thinking || liveState.value == LiveVoice.State.Speaking) &&
+            sessionError.value == null
+        ) {
+            Text(
+                text = "Hold to ask — tap to stop",
+                color = Color(0xFFF4F1FA).copy(alpha = 0.75f),
                 fontSize = 12.sp,
                 fontFamily = dev.bluey.client.ui.BlueyFonts.plexSans,
                 modifier = Modifier

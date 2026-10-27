@@ -628,3 +628,66 @@ by 0.45·1.45 — documented), bows up/middle-ward, straight drags, landing
 reports, opacity fades, attitude spring, hover ease-in bounds, blink
 gaps, press squish, face tracking, drowsiness, pinned ⇒ pointing, gaze
 override).
+
+## M3.1-fix — the tray that couldn't change, the sleep that couldn't last, the reply screen that never let go (0.4.1 / 0.3.9, 2026-10-28)
+
+The user's M3.1 hardware report, verbatim in three bugs, all fixed:
+
+- **The tray toggles never changed** (confirmed by reading the code): WPF
+  flips a checkable item's `IsChecked` *before* the `Click` event fires, so
+  the handlers — `Invoke(!item.IsChecked)` — were sending the OLD value
+  back. Eyes Follow My Mouse, Cursor Glow and Show Cursor could never move.
+  The Cursor Size items were checked and are clean (a Click sends the size
+  it stands for; WPF's own check-flip is cosmetic while the menu closes).
+  Fix: the handlers now apply the value `TrayToggle.Click()` returns — a
+  pure GooglyRealtime helper whose "click returns the NEW value, the menu
+  rebuild agrees, Sync overrides" contract is pinned by five
+  TrayToggleTests, so the inversion can't silently return. The tray also
+  updates its cached marks the moment you click, so the rebuilt menu is
+  right even before the async settings-changed sync lands.
+- **The phone slept, then woke itself and never slept again.** The engine
+  math is faithful (verified line-by-line against `CursorOverlay.swift`:
+  the 1.5 pt jitter threshold, drowsy at 5 s, dozing at 15 s — and the new
+  60-second still-mouse test pins it: Listening → Sleepy → Resting →
+  Resting at every half-second sample of a full minute, waking only on a
+  real >1.5 pt move). The real culprit was the frame loop: the original
+  steps its engine on a `CADisplayLink`, which fires every vsync forever;
+  WPF's `CompositionTarget.Rendering` only fires when something actually
+  invalidated — and a settled overlay invalidates nothing (every transform
+  converged bit-exactly, the body tucked below the edge at opacity 0). The
+  loop stalled, the ~1 Hz face heartbeat stopped, and the phone's 2.5 s
+  liveness — faithful to the original iOS, which falls back to a listening
+  face — turned that into "awake, wandering eyes, forever". Fix: a 100 ms
+  `DispatcherTimer` heartbeat in the overlay notices a stalled loop (>
+  150 ms since the last frame) and drives the frames itself; the moment
+  anything visual changes, the transform writes invalidate and the vsync
+  loop takes back over seamlessly.
+- **The phone stayed on the reply screen** until the next hold-to-ask.
+  `finishIfQuiet` was the only way off, and it stayed blocked when the
+  turn's completing event never arrived, when a chirp's completion
+  callback never fired, or when a tool callback hung. Four fixes, per the
+  user's spec: (a) a reply watchdog — 5 s quiet after the last caption
+  delta, 1.5 s after a captionDone — returns him to Listening regardless
+  of chirp buffers or `responseActive` (and hands the PC a captionDone for
+  a stream that died mid-reply, so its reading timer can tidy the bubble);
+  (b) `LiveVoice.cancel()` — a single tap while Thinking or Speaking stops
+  the chirp, clears the PC's bubble and goes back to Listening, with late
+  deltas of the stopped reply ignored until its turn really ends; (c) a
+  "Hold to ask — tap to stop" hint on the phone while he's thinking or
+  speaking (yields to a session error); (d) hard caps — 60 s in Thinking
+  (above the 20 s silence watchdog and the 30 s + 20 s honest tool leg),
+  120 s in Speaking — so nothing can pin either state forever. A slow
+  honest stream still dips him back into Speaking when its next word
+  lands, and the 20 s session recovery stays armed underneath it all.
+
+Windows 0.4.1 + Android 0.3.9 (versionCode 9) — both sides moved this
+time. Tests: Windows 161/161 (five TrayToggleTests + the 60-second
+still-mouse test), Android 143/143 (seven new/updated LiveVoiceTests:
+missing turnComplete, stuck chirp queue, tap-cancel + ignored tails, tap
+while thinking, tap while listening is a no-op, hung tool vs the 60 s
+cap, never-ending trickle vs the 120 s cap). The slow-words test was
+updated to the new contract: 5 s of stream quiet dips him to Listening,
+a resumed word puts him straight back mid-reply, and the session is
+never touched. Untested on hardware (honest): the tap gesture vs the
+double-tap wake/sleep disambiguation and the hint's on-screen placement
+— both need the phone in hand.
