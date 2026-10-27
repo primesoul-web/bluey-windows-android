@@ -574,3 +574,57 @@ Windows 0.3.8 and Android 0.3.8 (versionCode 8). Tests: Windows 136/136
 monitors, degenerate narrow work areas, drop-spot ≡ pinned-spot
 equivalence), Android 136/136 (three new: mid-stream death recovers,
 slow answers keep postponing, tool legs pause and re-arm the clock).
+
+## M3.1 — the character on the screen (v0.4.0, 2026-10-28)
+
+The first M3 drop: the googly-eyed cursor character exists on the PC,
+faithfully ported from `CursorOverlay.swift`'s engine half.
+
+- **The pure engine** (`GooglyRealtime/CursorMath.cs`, WPF-free,
+  console-testable): the CSS-style `TimingCurve` (launch / redirect /
+  steady, Newton solve with a bisection fallback), the flight planner
+  (logarithmic duration `clamp(0.45–1.2, 0.4 + 0.12·log₂(1 + d/24))`,
+  drag ×1.45, the bow — up for sideways trips, middle-ward for vertical,
+  zero while dragging — and velocity-carry redirects above 60 pt/s), the
+  home geometry (dock `h − 0.42·size`, tucked `h + 0.35·size`, phone
+  `h + 0.18·h`, all at `phonePosition`), the attitude spring (π/4 docked,
+  0 upright, lean ±0.2·(vx/2800), k = 24), opacity 12/s in · 6/s out, the
+  blink schedule (0.13 s every 2.5–6 s), the press squish, the hover bob
+  ease-in, the dt clamp [1/480, 1/20], and the phone-face computation —
+  gaze toward the character (your mouse while tucked), pinned ⇒ pointing,
+  drowsy after 5 s idle and resting after 15, never while awake.
+- **The overlay window** (`GooglyWindows/OverlayWindow.cs`): click-through
+  (WS_EX_TRANSPARENT — nothing interactive lives here until M3.3 moves
+  the bubble in), topmost, non-activating, fitted to the full primary
+  screen once and never resized while visible (the M2.17 ghost-free
+  lesson), refit on display changes, driven by
+  `CompositionTarget.Rendering` with the clamped dt. The teardrop body is
+  the original's art: three fully rounded corners + the sharp tip at
+  6k, the berry gradient along (0.25s, 0.067s)→(0.75s, 0.933s), the
+  radial shine at (0.3s, 0.24s), the 4 pt white rim (8k stroked, half
+  clipped away), and the glow shadow (berry2@0.7 r30k, or berry4@0.45
+  r16k) — all rasterized once into a `BitmapCache`; frames only touch
+  transforms. The googly eyes (18k whites at (34,40)/(58,40)k, 9k ink
+  pupils ±3.4k toward the look direction, pupil chase above 90 pt/s
+  else settle to the tip, blink scaleY 0.12) are separate uncached
+  elements so moving them never re-rasterizes the body.
+- **FaceDriver (the M1 stand-in) deleted**: the overlay now drives the
+  phone's face at the proven ~30 Hz cadence — gaze, moods, drowsiness,
+  talk level — replacing the old always-listening/always-center packets.
+- **The tray gains the M3.1 slice** it takes to verify the drop on
+  hardware: Eyes Follow My Mouse (checkable), Cursor Size ▸ (48/72/96/
+  120), Cursor Glow, Show Cursor — the full exact menu order lands with
+  M3.4. All settings persist through `HostSettings` (keys/defaults
+  already matched the original).
+- The caption bubble stays in its own window this drop — it moves onto
+  the cursor with the M3.3 choreography, keeping click/✕/drag exactly as
+  shipped in M2.16/17.
+
+Windows 0.4.0 (Android unchanged at 0.3.8 — nothing phone-side moved).
+Tests: Windows 155/155 (nineteen new CursorMathTests: curve endpoints,
+monotonicity, launch/redirect character, dt clamp, home geometry,
+duration growth + drag caps (the original's 0.6 drag floor is shadowed
+by 0.45·1.45 — documented), bows up/middle-ward, straight drags, landing
+reports, opacity fades, attitude spring, hover ease-in bounds, blink
+gaps, press squish, face tracking, drowsiness, pinned ⇒ pointing, gaze
+override).

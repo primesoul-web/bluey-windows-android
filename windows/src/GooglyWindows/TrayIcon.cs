@@ -36,6 +36,30 @@ public sealed class TrayIcon : IDisposable
     /// <summary>Forwards WM_HOTKEY (the argument is the hotkey id).</summary>
     public event Action<int>? HotKeyMessage;
 
+    // The M3.1 overlay slice of the menu (the exact original order lands with the
+    // full menu in M3.4).
+    /// <summary>The user toggled “Eyes Follow My Mouse” (idle: tucked + phone tracks
+    /// your mouse) off/on — off parks the character docked above the phone.</summary>
+    public event Action<bool>? FollowMouseToggled;
+    /// <summary>The user picked a cursor size (48/72/96/120 points).</summary>
+    public event Action<double>? CursorSizeSelected;
+    public event Action<bool>? GlowToggled;
+    public event Action<bool>? ShowCursorToggled;
+
+    private bool _followMouse = true;
+    private double _cursorSize = 72;
+    private bool _glow;
+    private bool _showCursor = true;
+
+    /// <summary>Syncs the overlay settings' checkmarks (called whenever settings change).</summary>
+    public void UpdateOverlaySettings(bool followMouse, double cursorSize, bool glow, bool showCursor)
+    {
+        _followMouse = followMouse;
+        _cursorSize = cursorSize;
+        _glow = glow;
+        _showCursor = showCursor;
+    }
+
     public IntPtr Hwnd => _source?.Handle ?? throw new InvalidOperationException("tray icon not shown");
 
     public TrayIcon()
@@ -180,6 +204,52 @@ public sealed class TrayIcon : IDisposable
         var test = new MenuItem { Header = "Test Gemini Connection…" };
         test.Click += (_, _) => TestGeminiRequested?.Invoke();
         menu.Items.Add(test);
+
+        menu.Items.Add(new Separator());
+
+        // The M3.1 overlay slice: everything the character rendering consumes, so the
+        // drop is checkable on hardware before the full menu lands (M3.4).
+        var follow = new MenuItem
+        {
+            Header = "Eyes Follow My Mouse",
+            IsCheckable = true,
+            IsChecked = _followMouse,
+        };
+        follow.Click += (_, _) => FollowMouseToggled?.Invoke(!follow.IsChecked);
+        menu.Items.Add(follow);
+
+        var sizeMenu = new MenuItem { Header = "Cursor Size" };
+        foreach (var s in (double[])[48, 72, 96, 120])
+        {
+            var size = s;
+            var item = new MenuItem
+            {
+                Header = $"{size:F0} pt",
+                IsCheckable = true,
+                IsChecked = Math.Abs(_cursorSize - size) < 0.01,
+            };
+            item.Click += (_, _) => CursorSizeSelected?.Invoke(size);
+            sizeMenu.Items.Add(item);
+        }
+        menu.Items.Add(sizeMenu);
+
+        var glowItem = new MenuItem
+        {
+            Header = "Cursor Glow",
+            IsCheckable = true,
+            IsChecked = _glow,
+        };
+        glowItem.Click += (_, _) => GlowToggled?.Invoke(!glowItem.IsChecked);
+        menu.Items.Add(glowItem);
+
+        var showItem = new MenuItem
+        {
+            Header = "Show Cursor",
+            IsCheckable = true,
+            IsChecked = _showCursor,
+        };
+        showItem.Click += (_, _) => ShowCursorToggled?.Invoke(!showItem.IsChecked);
+        menu.Items.Add(showItem);
 
         menu.Items.Add(new Separator());
         var quit = new MenuItem { Header = "Quit Bluey" };

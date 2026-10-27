@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Bluey</AssemblyName>
     <RootNamespace>GooglyWindows</RootNamespace>
-    <Version>0.3.8</Version>
+    <Version>0.4.0</Version>
     <Product>Bluey for Windows</Product>
     <Description>Bluey host app for Windows — a port of bluey-by-riley (Unlicense).</Description>
     <Copyright>Public domain (Unlicense). Original by rbrown101010.</Copyright>

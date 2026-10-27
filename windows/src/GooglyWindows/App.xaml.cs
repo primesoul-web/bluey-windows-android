@@ -16,7 +16,7 @@ public partial class App : Application
     private PhoneServer _server = null!;
     private MdnsAdvertiser _advertiser = null!;
     private TrayIcon _tray = null!;
-    private FaceDriver _faceDriver = null!;
+    private OverlayWindow _overlay = null!;
     private HotKeys _hotKeys = null!;
 
     private HostSettings _settings = null!;
@@ -51,8 +51,6 @@ public partial class App : Application
         _keys = new ApiKeyStore();
         _minter = new RealtimeMinter();
         _captions = new CaptionWindow { PhonePosition = _settings.PhonePosition };
-        _settings.Changed += () => Dispatcher.BeginInvoke(() =>
-            _captions.PhonePosition = _settings.PhonePosition);
         _host = new RealtimeHost(_settings, _keys, _minter, _captions);
         _host.Changed += UpdateTray;
         _host.Log += Log;
@@ -101,14 +99,28 @@ public partial class App : Application
         _tray.EditKeysRequested += EditKeys;
         _tray.EditPersonalityRequested += EditPersonality;
         _tray.TestGeminiRequested += _selfTest.RunFromTray;
+        // The M3.1 overlay slice of the menu: settings the character consumes.
+        _tray.FollowMouseToggled += v => _settings.FollowMouse = v;
+        _tray.CursorSizeSelected += v => _settings.CursorSize = v;
+        _tray.GlowToggled += v => _settings.Glow = v;
+        _tray.ShowCursorToggled += v => _settings.ShowCursor = v;
+        SyncTrayOverlaySettings();
         UpdateTray();
 
         _hotKeys = new HotKeys(_tray.Hwnd);
         _tray.HotKeyMessage += _hotKeys.Handle;
         _hotKeys.WakeSleepPressed += ToggleAwake;
 
-        _faceDriver = new FaceDriver(_server);
-        _faceDriver.Start();
+        // The M3 overlay replaces the M1 face driver: the character on screen drives
+        // the phone's face (gaze toward him, your mouse while tucked, moods, drowsiness).
+        _overlay = new OverlayWindow(_server, _settings);
+        _settings.Changed += () => Dispatcher.BeginInvoke(() =>
+        {
+            _overlay.ApplySettings();
+            _captions.PhonePosition = _settings.PhonePosition;
+            SyncTrayOverlaySettings();
+        });
+        _overlay.Show();
 
         // The original asks for an API key on first launch, half a second in.
         if (_keys.Get("gemini") is null)
@@ -168,7 +180,13 @@ public partial class App : Application
             _server.Port == PhoneServer.DefaultPort
                 ? $"Listening on port {PhoneServer.DefaultPort} — {LocalAddresses()}"
                 : $"Listening on port {_server.Port} (ephemeral)");
+        // He's awake and talking with you: no dozing off at the screen.
+        if (_overlay is not null) _overlay.Engine.Awake = _host.Awake;
     }
+
+    /// <summary>Keeps the tray's overlay checkmarks in step with the settings file.</summary>
+    private void SyncTrayOverlaySettings() =>
+        _tray.UpdateOverlaySettings(_settings.FollowMouse, _settings.CursorSize, _settings.Glow, _settings.ShowCursor);
 
     /// <summary>The PC's own LAN IPv4s, so the user can type one on a USB-cable setup.</summary>
     private static string LocalAddresses()
@@ -195,7 +213,7 @@ public partial class App : Application
     private void Quit()
     {
         Log("quitting");
-        _faceDriver.Stop();
+        try { _overlay.Close(); } catch { /* already closed */ }
         _hotKeys.Dispose();
         _settings.Dispose();
         _tray.Dispose();
