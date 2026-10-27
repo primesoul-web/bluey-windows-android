@@ -530,3 +530,47 @@ Phone 0.3.7 (versionCode 7) and Windows 0.3.7. Tests: Android 134/134
 answer, stand-down-on-server-words, stale-tail drop, asking-face-while-
 thinking), Windows 132/132 (nine new CaptionGeometry tests: font tiers,
 width clamp, anchored placement, pin clamping, chrome accounting).
+
+## M2.17 — the bubble that multiplied when you dragged it (v0.3.8, 2026-10-28)
+
+- **Ghost boxes and stuttery dragging** ("it doesn't properly drag and get
+  the box duplicate or quintuplets etc… does not smoothly drag anywhere
+  in the screen"). v0.3.7's drag moved the *window* — `Left` then `Top`,
+  two native moves on every mouse-move. A per-pixel-transparent layered
+  window is fully re-composited at each position (DropShadowEffect and
+  all), the render thread falls behind the input thread, and the screen
+  keeps stale copies: the box smears into "duplicates or quintuplets".
+  Worse, the drag deltas were measured against the window's own moving
+  origin (`GetPosition(this)`), so under load the reference frame shifted
+  between samples and the box lagged and stuttered instead of tracking
+  the cursor.
+  - the window is now laid out **once** over the whole work area and
+    never moves or resizes again — dragging translates the bubble
+    *inside* it via a `TranslateTransform` on a `BitmapCache`d holder, a
+    pure compositor operation: cursor-exact, ghost-free, nothing
+    re-rendered mid-drag;
+  - the hit-test hook keeps everything outside the cloud click-through
+    (now also on its failure path, and skipped while hidden or mid-drag);
+  - the drag clamp is one pure function, `CaptionGeometry.ClampDrag`,
+    shared with `Place`'s pinned branch — where you drop the bubble is
+    exactly where the next reply lands (v0.3.7 re-clamped pinned spots
+    fully inside, quietly moving a bubble the user had parked low);
+  - this is also the M3 architecture — the bubble riding the cursor
+    overlay is the same still-window + inner-visual trick.
+
+- **The watchdog that stood down too early** (the "fixed to some point"
+  residue). v0.3.7's silence watchdog stood down for good on the first
+  streamed word — so a reply that died *mid-stream* left him stuck in
+  `Speaking` with no self-healing. Now it's a quiescence clock: every
+  server word while the exchange is open merely **moves the deadline
+  forward**; only exchange-closing events (turn complete, interrupted)
+  stand it down, and the PC's tool turn pauses it (no server words arrive
+  while tools run by design) with a re-arm the moment the results go
+  back. A stream silent for the full 20 s window is a dead session no
+  matter how hopefully it started — recover, re-mint, carry on.
+
+Windows 0.3.8 and Android 0.3.8 (versionCode 8). Tests: Windows 136/136
+(four new ClampDrag tests: every-edge clamping, negative-coordinate
+monitors, degenerate narrow work areas, drop-spot ≡ pinned-spot
+equivalence), Android 136/136 (three new: mid-stream death recovers,
+slow answers keep postponing, tool legs pause and re-arm the clock).

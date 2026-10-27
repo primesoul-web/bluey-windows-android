@@ -20,10 +20,18 @@ namespace GooglyWindows;
 ///
 /// Interactive since v0.3.7 (the user asked; the original's bubble was click-through):
 /// a click anywhere on the bubble closes it, the ✕ badge in its corner closes it, and
-/// dragging moves it — the dragged spot is where every later bubble lands too. Only
-/// the bubble itself takes the pointer: everything around it (the shadow margin, the
-/// rounded corners' cut-outs) passes clicks straight through to whatever is behind.
-/// The window never activates, so it can't steal focus from real work.
+/// dragging moves it — the dragged spot is where every later bubble lands too. Only the
+/// bubble itself takes the pointer: everything around it passes clicks straight through
+/// to whatever is behind. The window never activates, so it can't steal focus.
+///
+/// Smooth since v0.3.8: the window is laid out once over the whole work area and NEVER
+/// moves or resizes again — dragging translates the cloud inside it. v0.3.7 dragged by
+/// moving the window itself (Left then Top: two native moves per mouse-move), and a
+/// per-pixel-transparent window is fully re-composited at every position, so the render
+/// thread fell behind the input thread and the screen kept stale copies — the box
+/// "duplicated" into ghosts and tracked the cursor in stutters. A cached visual moving
+/// inside a still window is pure composition: cursor-exact, ghost-free — and it is the
+/// M3 shape anyway, where the bubble rides the cursor overlay the same way.
 /// </summary>
 public sealed class CaptionWindow : Window
 {
@@ -33,6 +41,14 @@ public sealed class CaptionWindow : Window
     private readonly TextBlock _text;
     private readonly Border _cloud;
     private readonly Border _close;
+
+    /// <summary>The bubble (cloud + badge) as one draggable unit, parked at the
+    /// top-left of the window and moved by [_spot] — never by moving the window.</summary>
+    private readonly Grid _holder;
+
+    /// <summary>Where the bubble sits inside the work-area-sized window. The one
+    /// thing a drag changes.</summary>
+    private readonly TranslateTransform _spot = new();
 
     /// <summary>0 = left edge of the screen, 1 = right (where the phone sits).</summary>
     public double PhonePosition { get; set; } = 0.5;
@@ -60,9 +76,11 @@ public sealed class CaptionWindow : Window
         Topmost = true;
         Focusable = false;
         ResizeMode = ResizeMode.NoResize;
-        SizeToContent = SizeToContent.Height;
         Opacity = 0;
         Visibility = Visibility.Hidden;
+        // No SizeToContent and no per-caption Width: the window is fitted to the work
+        // area once and stays put — moving or resizing a layered window mid-drag is
+        // exactly what smeared it into ghosts (v0.3.7).
 
         _text = new TextBlock
         {
@@ -120,9 +138,20 @@ public sealed class CaptionWindow : Window
             FadeOut();
         };
 
+        _holder = new Grid
+        {
+            HorizontalAlignment = HorizontalAlignment.Left, // sizes to the bubble, not
+            VerticalAlignment = VerticalAlignment.Top,      // to the whole work area
+            RenderTransform = _spot,
+            // The cloud (shadow included) is rasterized once into a cached bitmap:
+            // dragging it is a compositor-side translate, not a re-render.
+            CacheMode = new BitmapCache(),
+        };
+        _holder.Children.Add(_cloud);
+        _holder.Children.Add(_close);
+
         var root = new Grid();
-        root.Children.Add(_cloud);
-        root.Children.Add(_close);
+        root.Children.Add(_holder);
         Content = root;
 
         _cloud.MouseLeftButtonDown += OnCloudDown;
@@ -130,7 +159,11 @@ public sealed class CaptionWindow : Window
         _cloud.MouseLeftButtonUp += OnCloudUp;
         _cloud.LostMouseCapture += (_, _) => _pressing = false;
 
-        SourceInitialized += (_, _) => InstallPointerRules();
+        SourceInitialized += (_, _) =>
+        {
+            FitWorkArea();
+            InstallPointerRules();
+        };
     }
 
     /// <summary>Shows (or, with null, hides) the bubble. Runs on the UI thread.</summary>
@@ -141,6 +174,8 @@ public sealed class CaptionWindow : Window
             FadeOut();
             return;
         }
+
+        FitWorkArea(); // the taskbar may have moved since the last bubble
 
         var length = text.Length;
         _text.FontSize = CaptionGeometry.FontSizeFor(length);
@@ -161,13 +196,12 @@ public sealed class CaptionWindow : Window
         _cloud.Measure(new Size(width + CaptionGeometry.Chrome, double.PositiveInfinity));
         var size = _cloud.DesiredSize;
 
-        Width = size.Width;
         var (left, top) = CaptionGeometry.Place(
             size.Width, size.Height,
             new CaptionGeometry.WorkArea(work.Left, work.Top, work.Right, work.Bottom),
             PhonePosition, _pinned);
-        Left = left;
-        Top = top;
+        _spot.X = left - work.Left; // park the bubble: the window itself never moves
+        _spot.Y = top - work.Top;
 
         Visibility = Visibility.Visible;
         Opacity = 0;
@@ -186,11 +220,28 @@ public sealed class CaptionWindow : Window
         BeginAnimation(OpacityProperty, fade);
     }
 
+    /// <summary>Lays the window over the work area — the only geometry the window ever
+    /// gets. Cheap while hidden (between bubbles), and nothing about a visible bubble
+    /// depends on it: the cloud keeps its [Place]d spot until the next [Show].</summary>
+    private void FitWorkArea()
+    {
+        var work = SystemParameters.WorkArea;
+        if (Left != work.Left || Top != work.Top ||
+            Width != work.Width || Height != work.Height)
+        {
+            Left = work.Left;
+            Top = work.Top;
+            Width = work.Width;
+            Height = work.Height;
+        }
+    }
+
     // MARK: Pointer rules — interactive on the bubble, invisible to clicks around it
 
-    /// <summary>Drops the click-through style (v0.3.6 and earlier) but keeps the window
-    /// out of the taskbar, Alt+Tab and the focus chain, and answers WM_NCHITTEST so
-    /// only the bubble itself ever takes the pointer.</summary>
+    /// <summary>Keeps the window out of the taskbar, Alt+Tab and the focus chain, and
+    /// answers WM_NCHITTEST so only the bubble itself ever takes the pointer. The
+    /// window covers the whole work area, so this hook is what makes everything
+    /// outside the cloud click-through.</summary>
     private void InstallPointerRules()
     {
         var hwnd = new WindowInteropHelper(this).Handle;
@@ -205,6 +256,12 @@ public sealed class CaptionWindow : Window
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (msg != WM_NCHITTEST) return IntPtr.Zero;
+        if (_dragging) return IntPtr.Zero; // the capture owns the input for now
+        if (Visibility != Visibility.Visible)
+        {
+            handled = true;
+            return HTTRANSPARENT; // nothing to hit while hidden
+        }
         // Screen pixels, signed shorts so multi-monitor negative coordinates work.
         var x = (short)((long)lParam & 0xFFFF);
         var y = (short)(((long)lParam >> 16) & 0xFFFF);
@@ -218,13 +275,18 @@ public sealed class CaptionWindow : Window
         }
         catch (InvalidOperationException)
         {
-            // not rendered yet — let the default answer stand
+            // Not rendered yet — click-through is the safe answer for an overlay,
+            // never the default (which would eat the whole work area).
+            handled = true;
+            return HTTRANSPARENT;
         }
         return IntPtr.Zero;
     }
 
     /// <summary>True when the point lands on the cloud or the ✕ badge (their real
-    /// shapes — a null window background keeps the rest of the window unhittable).</summary>
+    /// shapes — a null window background keeps the rest of the window unhittable).
+    /// The [RenderTransform] on the holder is part of the hit test, so this tracks
+    /// the bubble wherever a drag has parked it.</summary>
     private bool IsBubbleHit(Point point)
     {
         var visual = VisualTreeHelper.HitTest(this, point)?.VisualHit;
@@ -259,9 +321,18 @@ public sealed class CaptionWindow : Window
         }
         if (_dragging)
         {
-            Left += p.X - _lastPoint.X;
-            Top += p.Y - _lastPoint.Y;
-            PinToWorkArea();
+            // The window never moves, so p - _lastPoint is the exact screen delta: the
+            // bubble tracks the cursor 1:1. (v0.3.7 measured against a window that was
+            // itself being moved — the reference frame shifted between samples, which
+            // is what made drags lag and stutter.)
+            var work = SystemParameters.WorkArea;
+            var (left, top) = CaptionGeometry.ClampDrag(
+                work.Left + _spot.X + p.X - _lastPoint.X,
+                work.Top + _spot.Y + p.Y - _lastPoint.Y,
+                _holder.RenderSize.Width,
+                new CaptionGeometry.WorkArea(work.Left, work.Top, work.Right, work.Bottom));
+            _spot.X = left - work.Left;
+            _spot.Y = top - work.Top;
         }
         _lastPoint = p;
     }
@@ -273,7 +344,13 @@ public sealed class CaptionWindow : Window
         var wasDragging = _dragging;
         _dragging = false;
         _cloud.ReleaseMouseCapture();
-        if (wasDragging) return;
+        if (wasDragging)
+        {
+            // The drop becomes the anchor: every later bubble lands here too.
+            var work = SystemParameters.WorkArea;
+            _pinned = new CaptionGeometry.Spot(work.Left + _spot.X, work.Top + _spot.Y);
+            return;
+        }
         // A click that never became a drag closes the bubble — but a release out in
         // the margins (the press left the cloud while captured) is a cancel, not a close.
         var r = e.GetPosition(_cloud);
@@ -281,17 +358,6 @@ public sealed class CaptionWindow : Window
         {
             FadeOut();
         }
-    }
-
-    /// <summary>Keeps the dragged bubble reachable — at least [CaptionGeometry.KeepVisible]
-    /// DIPs on screen and the ✕ badge inside the work area — and remembers the spot.</summary>
-    private void PinToWorkArea()
-    {
-        var work = SystemParameters.WorkArea;
-        Left = Math.Clamp(Left, work.Left - ActualWidth + CaptionGeometry.KeepVisible,
-            Math.Max(work.Left - ActualWidth + CaptionGeometry.KeepVisible, work.Right - CaptionGeometry.KeepVisible));
-        Top = Math.Clamp(Top, work.Top, Math.Max(work.Top, work.Bottom - 32));
-        _pinned = new CaptionGeometry.Spot(Left, Top);
     }
 
     /// <summary>The ✕ in the close badge — drawn, not typed, so it never depends on a

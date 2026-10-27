@@ -116,11 +116,16 @@ class LiveVoice(
     /** Counts wake attempts, so a stale wake watchdog can't fire into a later one. */
     private var wakeSerial = 0
 
-    /** The silence watchdog (v0.3.7): armed by an ask or a say-hi, stood down by any
-     * word from the server. `heardSinceAsk` is whether the server has spoken since
-     * the last ask — re-asking inside the same silent stretch must NOT extend the
-     * deadline, or a zombie session survives every retry (the 2026-10-25 log: five
-     * holds in 24 s, all into the void, until a sleep-wake cycle re-minted). */
+    /** The silence watchdog (v0.3.7, quiescence since v0.3.8): armed where the server
+     * owes the next word (an ask, a say-hi, tool results going back), refreshed by
+     * every server word while the exchange is still open, stood down when it isn't.
+     * `heardSinceAsk` is whether the server has spoken since the last ask — re-asking
+     * inside the same silent stretch must NOT extend the deadline, or a zombie session
+     * survives every retry (the 2026-10-25 log: five holds in 24 s, all into the void,
+     * until a sleep-wake cycle re-minted). v0.3.8 closed the hole the user still felt:
+     * a reply that died MID-STREAM used to stand the watchdog down for good on its
+     * first word — now each word only moves the deadline, and a stream silent for the
+     * full timeout is a dead session no matter how it started. */
     private var thinkSerial = 0
     private var thinkJob: Job? = null
     private var thinkArmed = false
@@ -194,9 +199,7 @@ class LiveVoice(
         val wasRunning = wantAwake || transport != null
         wantAwake = false
         reconnecting = false
-        thinkJob?.cancel()
-        thinkArmed = false
-        heardSinceAsk = true
+        standDownSilenceWatchdog()
         recorder.finish()
         if (wasRunning) onSessionEnd?.invoke()
         askedItems.clear()
@@ -345,8 +348,7 @@ class LiveVoice(
         sessionReady = false
         responseActive = false
         toolsRunning = 0
-        thinkJob?.cancel()
-        thinkArmed = false
+        standDownSilenceWatchdog()
         if (!wantAwake) {
             sleep()
             return
@@ -385,12 +387,23 @@ class LiveVoice(
     // MARK: The silence watchdog
 
     /** Arms the zombie-session watchdog unless one already covers this silent
-     * stretch. Twenty seconds: the slowest honest leg on record (a web_research
-     * round trip) answered in ~11 s; the dead zone of 2026-10-25 sat unanswered for
-     * 24 s while five holds reset nothing. */
+     * stretch — a re-ask must not reset the clock (the 2026-10-25 log: five holds
+     * in 24 s, all into the void). Called wherever the server owes the next word:
+     * an ask, a say-hi, tool results going back. */
     private fun armSilenceWatchdog() {
-        if (thinkArmed && !heardSinceAsk) return // a re-ask must not reset the clock
+        if (thinkArmed && !heardSinceAsk) return
         heardSinceAsk = false
+        restartSilenceWatchdog()
+    }
+
+    /** Proof of life arrived mid-exchange: the deadline moves forward (v0.3.8 —
+     * a reply that dies mid-stream is a zombie too, not an eternal "slow answer"). */
+    private fun refreshSilenceWatchdog() {
+        heardSinceAsk = true
+        restartSilenceWatchdog()
+    }
+
+    private fun restartSilenceWatchdog() {
         thinkArmed = true
         val serial = ++thinkSerial
         thinkJob?.cancel()
@@ -398,6 +411,12 @@ class LiveVoice(
             delay(THINK_TIMEOUT_MS)
             if (thinkSerial == serial && wantAwake) recoverDeadSession()
         }
+    }
+
+    private fun standDownSilenceWatchdog() {
+        heardSinceAsk = true
+        thinkArmed = false
+        thinkJob?.cancel()
     }
 
     /** The session stopped answering — the socket may still be open, but nothing is
@@ -448,10 +467,15 @@ class LiveVoice(
     // MARK: Events
 
     private fun handle(text: String) {
-        // Any word from the server is proof of life — the silence watchdog stands down.
-        heardSinceAsk = true
-        thinkArmed = false
-        thinkJob?.cancel()
+        // Any word from the server is proof of life. While an exchange is still open
+        // — an answer expected, streaming, or owed after tool results went back — the
+        // deadline merely moves forward (checked here, on the state the exchange is
+        // in as this event arrives). Events that CLOSE an exchange — a completed
+        // turn, an interrupted one — stand the clock down themselves below, and so
+        // does the PC's tool turn (no server words arrive while its tools run; the
+        // clock re-arms when the results go back — runTools).
+        if ((responseActive || awaitingQuestion) && toolsRunning == 0) refreshSilenceWatchdog()
+        else standDownSilenceWatchdog()
         when (val event = RealtimeEvents.parse(text)) {
             RealtimeEvents.Event.SetupComplete -> onSessionReady()
 
@@ -493,6 +517,10 @@ class LiveVoice(
 
             RealtimeEvents.Event.TurnComplete -> {
                 responseActive = false
+                // The exchange is over and healthy — the clock's job is done (without
+                // this, the completing event itself would re-arm it into idle
+                // listening and every finished chat would "recover" 20 s later).
+                standDownSilenceWatchdog()
                 if (transcript.isNotEmpty()) {
                     onCaption?.invoke(transcript, true)
                     onReply?.invoke(transcript)
@@ -505,12 +533,17 @@ class LiveVoice(
             RealtimeEvents.Event.Interrupted -> {
                 // You started a new ask mid-reply; the bubble was already cleared.
                 responseActive = false
+                standDownSilenceWatchdog() // that exchange is over; your ask re-arms
                 finishIfQuiet()
             }
 
             is RealtimeEvents.Event.ToolCalls -> {
                 responseActive = false
                 if (state != State.Speaking) setState(State.Thinking)
+                // The PC's turn now: no server words arrive while its tools run, so
+                // the silence clock pauses here and re-arms when the results go
+                // back (runTools) — otherwise an honest tool leg would time out.
+                standDownSilenceWatchdog()
                 runTools(event.calls)
             }
 
@@ -556,6 +589,8 @@ class LiveVoice(
                         // input_image + response.create order.
                         send(RealtimeEvents.toolResponse(results))
                         for (image in images) send(RealtimeEvents.imageTurn(image))
+                        // The model owes words again — the silence clock re-arms (v0.3.8).
+                        armSilenceWatchdog()
                     }
                 }
             }
@@ -601,9 +636,12 @@ class LiveVoice(
         const val WAKE_TIMEOUT_MS = 30_000L
 
         /** How long an ask may go unanswered before the session is declared dead and
-         * re-minted (v0.3.7). Generous next to the slowest honest leg on record (a
-         * web_research round trip answered in ~11 s), far below the dead zone it
-         * cures. Re-asks inside the same silence don't extend it. */
+         * re-minted (v0.3.7). Also how long a STREAM may fall silent mid-reply before
+         * the same verdict (v0.3.8) — honest deltas arrive over a second or two, so
+         * a full window of stream-silence is death. Generous next to the slowest
+         * honest leg on record (a web_research round trip answered in ~11 s), far
+         * below the dead zone it cures. Re-asks inside the same silence don't
+         * extend it. */
         const val THINK_TIMEOUT_MS = 20_000L
 
         /** What he says when the silence watchdog had to re-mint the session. */

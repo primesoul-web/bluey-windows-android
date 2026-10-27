@@ -664,10 +664,12 @@ class LiveVoiceTest {
         assertEquals(LiveVoice.State.Listening, live.state)
     }
 
-    // MARK: The silence watchdog (v0.3.7) — a zombie session must never stick him
-    // in Thinking. The 2026-10-25 log: a session died mid-answer, then five holds
-    // over 24 s sent empty captions into the void until a sleep-wake cycle
-    // re-minted. Now the phone heals itself.
+    // MARK: The silence watchdog (v0.3.7; quiescence since v0.3.8) — a zombie session
+    // must never stick him in Thinking or mid-reply. The 2026-10-25 log: a session
+    // died mid-answer, then five holds over 24 s sent empty captions into the void
+    // until a sleep-wake cycle re-minted. v0.3.7 cured the ask-into-silence case but
+    // stood the clock down for good on the first streamed word — a reply that died
+    // MID-STREAM still stuck. Now every server word only moves the deadline forward.
 
     @Test
     fun `an ask that never gets an answer recovers the session instead of sticking`() = runTest {
@@ -727,20 +729,74 @@ class LiveVoiceTest {
     }
 
     @Test
-    fun `server words while thinking stand the watchdog down`() = runTest {
+    fun `server words while thinking postpone the deadline - and a stream that dies mid-reply still recovers`() = runTest {
+        val captions = mutableListOf<Pair<String, Boolean>>()
+        val live = build()
+        live.onCaption = { text, done -> captions.add(text to done) }
+        live.wake()
+        transport.ready()
+        transport.sent.clear()
+
+        live.beginAsk(); live.endAsk()
+        // The answer starts streaming — proof of life, which under v0.3.7 stood the
+        // watchdog down FOR GOOD: a stream that died right after stuck him in
+        // Speaking forever (the "fixed to some point" the user still felt).
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Diving into the tech"}}}""")
+        assertEquals(LiveVoice.State.Speaking, live.state)
+
+        advanceTimeBy(20_000) // …then the stream goes silent for the full window
+        pump()
+
+        assertTrue(captions.any { it.first == LiveVoice.LOST_SESSION_MESSAGE && it.second })
+        assertEquals(1, transport.sentText("setup").size) // the recovery's fresh session
+        assertEquals(LiveVoice.State.Waking, live.state) // re-mint in flight
+    }
+
+    @Test
+    fun `words during a slow answer keep postponing the deadline`() = runTest {
         val live = build()
         live.wake()
         transport.ready()
 
         live.beginAsk(); live.endAsk()
-        // A partial reply — proof of life, even though the answer is slow.
+        transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Diving"}}}""")
+        advanceTimeBy(12_000)
         transport.deliver("""{"serverContent":{"outputTranscription":{"text":"Diving into the tech"}}}""")
-
-        advanceTimeBy(25_000)
+        advanceTimeBy(12_000) // t=24 s: past the first deadline — but words kept coming
         pump()
 
         assertEquals(LiveVoice.State.Speaking, live.state) // same session, mid-reply
-        assertEquals(1, transport.sentText("setup").size)
+        assertEquals(1, transport.sentText("setup").size) // no spurious recovery
+    }
+
+    @Test
+    fun `pc tool legs pause the silence clock and re-arm when results go back`() = runTest {
+        var pendingDone: ((String, String?) -> Unit)? = null
+        val live = build(
+            toolRunner = { _, _, done -> pendingDone = done }, // the PC is in no hurry
+        )
+        live.wake()
+        transport.ready()
+        transport.sent.clear()
+
+        live.beginAsk(); live.endAsk()
+        transport.deliver(
+            """{"toolCall":{"functionCalls":[{"name":"point_at","id":"call_1","args":{"target_id":"W3"}}]}}""",
+        )
+        assertEquals(LiveVoice.State.Thinking, live.state)
+
+        advanceTimeBy(30_000) // no server words while the tool runs — and no false fire
+        pump()
+        assertEquals(0, transport.sentText("setup").size)
+
+        pendingDone?.invoke("Pointed.", null) // results go back: words owed again
+        pump()
+        assertEquals(1, transport.sentText("toolResponse").size)
+
+        advanceTimeBy(20_000) // …and the model never resumes — the re-armed clock catches it
+        pump()
+        assertEquals(1, transport.sentText("setup").size) // the recovery's fresh session
+        assertEquals(LiveVoice.State.Waking, live.state)
     }
 
     @Test

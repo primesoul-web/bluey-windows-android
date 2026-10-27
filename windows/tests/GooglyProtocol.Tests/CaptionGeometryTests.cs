@@ -4,9 +4,10 @@ using Xunit;
 namespace GooglyProtocol.Tests;
 
 /// <summary>
-/// The bubble's pure geometry (v0.3.7): the wrap-width clamp, the font tiers, the
-/// anchored placement over the phone and the clamping of a user-dragged position —
-/// the math behind "click it away, drag it anywhere, never lose it off the edge".
+/// The bubble's pure geometry (v0.3.7; drag clamping unified in v0.3.8): the wrap-width
+/// clamp, the font tiers, the anchored placement over the phone and the clamping of a
+/// user-dragged position — the math behind "click it away, drag it anywhere, never
+/// lose it off the edge".
 /// </summary>
 public class CaptionGeometryTests
 {
@@ -86,9 +87,80 @@ public class CaptionGeometryTests
         var (_, top) = CaptionGeometry.Place(300, 120, Work, phonePosition: 0.5, pinned: pin);
         Assert.Equal(0, top, 3);
 
+        // Parked low on purpose: where you dropped it is where the next one lands —
+        // with the ✕ badge's row still reachable above the bottom (v0.3.8).
         var low = new CaptionGeometry.Spot(700, 5000);
         var (_, lowTop) = CaptionGeometry.Place(300, 120, Work, phonePosition: 0.5, pinned: low);
-        Assert.Equal(1040 - 120 - 8, lowTop, 3); // bottom margin, not off the work area
+        Assert.Equal(1040 - 32, lowTop, 3);
+    }
+
+    [Fact]
+    public void A_live_drag_clamps_at_every_edge()
+    {
+        // Free movement in the middle — the bubble tracks the cursor 1:1.
+        var (freeLeft, freeTop) = CaptionGeometry.ClampDrag(700, 300, 300, Work);
+        Assert.Equal(700, freeLeft, 3);
+        Assert.Equal(300, freeTop, 3);
+
+        // Off the left: at least KeepVisible DIPs of box stay on screen.
+        var (left, _) = CaptionGeometry.ClampDrag(-5000, 400, 300, Work);
+        Assert.Equal(0 - 300 + CaptionGeometry.KeepVisible, left, 3);
+
+        // Off the right: the ✕ badge's row stays on screen.
+        var (right, _) = CaptionGeometry.ClampDrag(5000, 400, 300, Work);
+        Assert.Equal(1920 - CaptionGeometry.KeepVisible, right, 3);
+
+        // Above: the top edge can't leave the work area.
+        var (_, top) = CaptionGeometry.ClampDrag(700, -500, 300, Work);
+        Assert.Equal(0, top, 3);
+
+        // Below: at least the top 32 DIPs — the badge's row — stay reachable.
+        var (_, bottom) = CaptionGeometry.ClampDrag(700, 5000, 300, Work);
+        Assert.Equal(1040 - 32, bottom, 3);
+    }
+
+    [Fact]
+    public void Drag_clamping_works_on_negative_coordinate_monitors()
+    {
+        // A second monitor left of the primary: its work area starts below zero.
+        var leftMonitor = new CaptionGeometry.WorkArea(-1920, 0, 0, 1040);
+        var (left, top) = CaptionGeometry.ClampDrag(-900, 300, 300, leftMonitor);
+        Assert.Equal(-900, left, 3);
+        Assert.Equal(300, top, 3);
+
+        var (clampedLeft, _) = CaptionGeometry.ClampDrag(-9999, 300, 300, leftMonitor);
+        Assert.Equal(-1920 - 300 + CaptionGeometry.KeepVisible, clampedLeft, 3);
+    }
+
+    [Fact]
+    public void A_work_area_narrower_than_two_keep_visibles_still_clamps()
+    {
+        // min-left would exceed max-left on a tiny work area — the Math.Min/Max
+        // guards keep Math.Clamp from throwing (the v0.3.6 hold-timer lesson).
+        var tiny = new CaptionGeometry.WorkArea(0, 0, 100, 400);
+        var (left, _) = CaptionGeometry.ClampDrag(50, 100, 300, tiny);
+        Assert.True(left >= -300 + CaptionGeometry.KeepVisible - 0.001);
+        Assert.True(left <= 100 - CaptionGeometry.KeepVisible + 0.001);
+    }
+
+    [Fact]
+    public void A_dropped_spot_and_a_pinned_bubble_obey_the_same_rule()
+    {
+        // Where you release the drag is exactly where the next bubble lands —
+        // the live clamp and the pinned placement are one function (v0.3.8).
+        foreach (var pin in new[]
+                 {
+                     new CaptionGeometry.Spot(700, 300),
+                     new CaptionGeometry.Spot(-5000, 400),
+                     new CaptionGeometry.Spot(5000, 400),
+                     new CaptionGeometry.Spot(700, 5000),
+                 })
+        {
+            var placed = CaptionGeometry.Place(300, 120, Work, phonePosition: 0.5, pinned: pin);
+            var dragged = CaptionGeometry.ClampDrag(pin.X, pin.Y, 300, Work);
+            Assert.Equal(dragged.Left, placed.Left, 3);
+            Assert.Equal(dragged.Top, placed.Top, 3);
+        }
     }
 
     [Fact]

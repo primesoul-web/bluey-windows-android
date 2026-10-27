@@ -30,21 +30,29 @@ public static class CaptionGeometry
 
     /// <summary>Where a bubble of this size lands. Anchored (no drag yet): bottom-center
     /// over where the phone sits, 24 DIPs above the work area's bottom, 8 DIPs inside
-    /// its sides. Pinned: the dragged spot — every bubble after the drag lands there
-    /// too, clamped to stay reachable.</summary>
+    /// its sides. Pinned: the dragged spot, clamped by [ClampDrag] — the same rule a
+    /// live drag uses, so the next bubble lands exactly where the last one was
+    /// dropped (v0.3.8; v0.3.7 re-clamped pinned spots fully inside, which moved the
+    /// bubble after the user had put it somewhere deliberate).</summary>
     public static (double Left, double Top) Place(
         double width, double height, WorkArea work, double phonePosition, Spot? pinned)
     {
-        if (pinned is { } pin)
-        {
-            var minLeft = Math.Min(work.Left - width + KeepVisible, work.Right - KeepVisible);
-            var maxLeft = Math.Max(work.Left - width + KeepVisible, work.Right - KeepVisible);
-            var maxTop = Math.Max(work.Top, work.Bottom - height - 8);
-            return (Math.Clamp(pin.X, minLeft, maxLeft), Math.Clamp(pin.Y, work.Top, maxTop));
-        }
+        if (pinned is { } pin) return ClampDrag(pin.X, pin.Y, width, work);
         var left = Math.Clamp(work.Left + phonePosition * work.Width - width / 2,
             work.Left + 8, Math.Max(work.Left + 8, work.Right - width - 8));
         return (left, work.Bottom - height - 24);
+    }
+
+    /// <summary>Keeps a dragged (or dropped) bubble reachable: at least [KeepVisible]
+    /// DIPs of its width on screen horizontally, its top edge never above the work
+    /// area, and at least its top 32 DIPs — the ✕ badge's row — visible above the
+    /// bottom. The same rule for a live drag and for a pinned spot.</summary>
+    public static (double Left, double Top) ClampDrag(double left, double top, double width, WorkArea work)
+    {
+        var minLeft = Math.Min(work.Left - width + KeepVisible, work.Right - KeepVisible);
+        var maxLeft = Math.Max(work.Left - width + KeepVisible, work.Right - KeepVisible);
+        return (Math.Clamp(left, minLeft, maxLeft),
+            Math.Clamp(top, work.Top, Math.Max(work.Top, work.Bottom - 32)));
     }
 
     /// <summary>A screen rectangle in DIPs (Left/Top/Right/Bottom), WPF-free so this
