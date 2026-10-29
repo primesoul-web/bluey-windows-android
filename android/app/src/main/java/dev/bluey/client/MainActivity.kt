@@ -57,6 +57,7 @@ import dev.bluey.client.ui.FaceView
 import dev.bluey.client.ui.ModeIndicator
 import dev.bluey.client.ui.PairingView
 import dev.bluey.client.ui.SoundButton
+import dev.bluey.client.ui.TapToStop
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -299,6 +300,13 @@ private fun BlueyRoot(
         }
     }
 
+    // When the last hold-to-ask gesture ended. The finger-up that ends a hold is ALSO a
+    // "tap" to detectTapGestures (it has no onLongPress, so any press-and-release counts,
+    // however long), and Compose delivers it ~300 ms after release — after the question has
+    // already gone out. v0.3.9 let that phantom tap cancel every question the moment it was
+    // asked; taps that follow a hold are now ignored.
+    val lastHoldMs = remember { LongArray(1) }
+
     Box(
         Modifier
             .fillMaxSize()
@@ -317,8 +325,11 @@ private fun BlueyRoot(
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onTap = {
-                            if (liveState.value == LiveVoice.State.Thinking ||
-                                liveState.value == LiveVoice.State.Speaking
+                            if (TapToStop.shouldCancel(
+                                    nowMs = System.currentTimeMillis(),
+                                    lastHoldMs = lastHoldMs[0],
+                                    state = liveState.value,
+                                )
                             ) live.cancel()
                         },
                         onDoubleTap = { live.toggle() }, // double tap: wake up / back to follow mode
@@ -327,10 +338,12 @@ private fun BlueyRoot(
                 .pointerInput(live) {
                     holdToAsk(
                         onHold = {
+                            lastHoldMs[0] = System.currentTimeMillis()
                             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                             live.beginAsk()
                         },
                         onRelease = {
+                            lastHoldMs[0] = System.currentTimeMillis()
                             view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                             live.endAsk()
                         },

@@ -208,6 +208,9 @@ public sealed class CursorEngine
     /// <summary>True while he's awake and talking with you (no dozing off then).</summary>
     public bool Awake;
     private Pt _mouse;
+    /// <summary>Stamped on the first step (the original stamps construction time) and
+    /// again on every real mouse move — a mouse parked at exactly (0,0) from launch
+    /// must still doze, not idle on NaN forever.</summary>
     private double _lastMouseMove = double.NaN;
     /// <summary>Live voice loudness, 0…1.</summary>
     public Func<double> TalkLevel { get; set; } = static () => 0;
@@ -261,7 +264,7 @@ public sealed class CursorEngine
     public void Step(double dt, double now, Pt mouse, Sz bounds)
     {
         Bounds = bounds;
-        if ((mouse - _mouse).Length > 1.5) _lastMouseMove = now;
+        if (double.IsNaN(_lastMouseMove) || (mouse - _mouse).Length > 1.5) _lastMouseMove = now;
         _mouse = mouse;
         if (!_placed)
         {

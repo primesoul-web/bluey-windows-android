@@ -13,8 +13,8 @@ android {
         applicationId = "dev.bluey.client"
         minSdk = 29
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.3.9"
+        versionCode = 10
+        versionName = "0.3.10"
     }
 
     buildTypes {

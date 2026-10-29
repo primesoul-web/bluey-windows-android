@@ -691,3 +691,75 @@ a resumed word puts him straight back mid-reply, and the session is
 never touched. Untested on hardware (honest): the tap gesture vs the
 double-tap wake/sleep disambiguation and the hint's on-screen placement
 — both need the phone in hand.
+
+## v0.3.10 / v0.4.2 — the ask that cancelled itself, and the doze that was never allowed
+
+Two findings from the v0.3.9 hardware test (2026-10-29). One bug fixed on
+the phone; one non-bug explained and pinned on the PC.
+
+**Every hold-to-ask was cancelled the moment it was asked** (Android
+0.3.10, the user's patch, applied and made testable). The tap-to-stop
+handler uses `detectTapGestures(onTap, onDoubleTap)` with no
+`onLongPress`, so Compose counts ANY press-and-release as a tap, however
+long it was held. The finger-up that ends a hold-to-ask arrives as a
+phantom `onTap` ~300 ms after release (the double-tap window) — by then
+the question has gone out, the state is Thinking, and the phantom tap
+called `live.cancel()`, suppressing every reply. `holdToAsk()` doesn't
+consume the pointer events, so both handlers see the same stream. The
+fix stamps `lastHoldMs` (a `remember { LongArray(1) }` in `BlueyRoot`,
+captured by both `pointerInput` blocks) on hold start and on release,
+and ignores taps that arrive within 1500 ms of a hold. The decision now
+lives in one pure function — `TapToStop.shouldCancel(nowMs, lastHoldMs,
+state, windowMs)` in `ui/TapToStop.kt` — pinned by eleven TapToStopTests:
+a tap right after a hold is ignored (Thinking and Speaking), a tap after
+the window still cancels, the boundary is exclusive, a quick tap with no
+hold cancels while Thinking/Speaking, never while Listening/Asleep/
+Waking/Asking, and the echo window comfortably covers Compose's
+double-tap window. Accepted tradeoff, documented in the source: a
+deliberate tap-to-stop in the first 1.5 s after releasing a hold is also
+swallowed. Double-tap wake/sleep is untouched — `onDoubleTap` fires
+before `onTap`'s timeout path, and quick taps never trip the hold
+detector, so they stamp nothing.
+
+**The 60-second stillness test showed no drowsiness and no sleep**
+(Windows 0.4.2 — investigated, one parity gap fixed, the rest is design).
+The user's own diagnosis was right: the phone held a live session
+(a stream of "awake" packets in the log), `Engine.Awake` mirrors
+`host.Awake`, and the doze branch requires `!Awake` — no dozing while
+he's talking with you, exactly like the original's `engine.awake`. That
+half is now pinned by DozeScenarioTests: a live session holds the cursor
+awake through the whole stillness test (a listening face, by design),
+while a sleeping phone (double-tap → "asleep" → `SetAwake(false)`) lets
+the original schedule through — Sleepy at 5 s, Resting at 15 s, Resting
+at every half-second sample through the full minute, an honest wake on a
+real move, and no wake on sub-threshold jitter. The 100 ms heartbeat
+backstop can't break it either: a third test drives the engine at
+heartbeat cadence (dt clamped to 1/20) and the schedule is identical,
+because the idle clock is wall time, not a frame count. The one real gap
+found in review: the original stamps `lastMouseMove` at construction,
+the port left it `NaN` until the first real move — and a mouse parked at
+exactly (0,0) (where the engine's `_mouse` starts) never moves "from"
+anywhere, so idle stayed NaN and he could never doze. The first step now
+stamps the clock (a one-line parity fix), pinned by a test.
+
+**Why the phone sends "awake" so often** (explained, not a bug): the
+Android `onStateChange` is a line-for-line port of the iOS original's
+`GooglyApp.swift` — every transition to Listening or Asking sends one
+"awake", so a Q&A session produces one per finished reply plus one per
+wake, and each wake is a new Gemini session, i.e. a fresh token mint
+(the asleep → realtimeToken → mint → awake cycles in the log). The
+22:44:04–05 burst was the missing-API-key path: three failed mints,
+each error captioned and the state dropped back to Asleep — the user
+re-asking while the key wasn't stored yet. The later cycles every few
+seconds match wake/sleep toggling and reconnect churn (a dropped WSS
+mints a new token with 2 s + 3 s·attempt backoff) during the test
+window; the log's ten quiet minutes (22:52–23:02) show there is no idle
+churn. PC-side, each "awake" is an idempotent `SetAwake(true)` whose
+only lasting effect is the intended no-doze-while-talking.
+
+Windows 0.4.2 + Android 0.3.10 (versionCode 10). Tests: Windows 165/165
+(four new DozeScenarioTests), Android 154/154 (eleven new TapToStopTests
+in `ui/TapToStopTest.kt`). Untested on hardware (honest): the phantom-tap
+fix itself and the asleep-phone stillness run — both need the Redmi Note
+10S and the PC in hand; the sandbox verified the decision logic, the
+engine math and the log forensics only.
